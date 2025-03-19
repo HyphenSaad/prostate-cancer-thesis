@@ -16,7 +16,7 @@ from tqdm import tqdm
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
-from constants.misc import DATASET_BASE_DIRECTORY, DATASET_SLIDES_FOLDER_NAME, DATASET_INFO_FILE_NAME, OUTPUT_BASE_DIRECTORY
+from constants.misc import DATASET_BASE_DIRECTORY, DATASET_INFO_FILE_NAME, OUTPUT_BASE_DIRECTORY
 from constants.encoders import Encoders
 from encoders import get_encoder, get_custom_transformer
 from utils.helper import create_directories
@@ -31,7 +31,6 @@ CONFIG = {
   'dataset_info_csv': os.path.join(DATASET_BASE_DIRECTORY, DATASET_INFO_FILE_NAME),
   'processed_dataset_info_csv': os.path.join(OUTPUT_BASE_DIRECTORY, 'extract_features', 'processed_dataset_info.csv'),
   'directories': {
-    'slides_directory': os.path.join(DATASET_BASE_DIRECTORY, DATASET_SLIDES_FOLDER_NAME),
     'patches_h5_directory': os.path.join(OUTPUT_BASE_DIRECTORY, 'create_patches', 'patches'),
     'extract_patches_directory': os.path.join(OUTPUT_BASE_DIRECTORY, 'extract_patches'),
     'save_base_directory': os.path.join(OUTPUT_BASE_DIRECTORY, 'extract_features'),
@@ -255,7 +254,6 @@ def main():
     dataset_dir, slide_id = dataset_bags[bag_candidate_index]
     if CONFIG['verbose']: logger.info(f'\nSlide ID: {slide_id}')
     
-    patch_img_dir = CONFIG['directories']['slides_directory']
     output_feature_path = os.path.join(encoder_pt_path, f'{slide_id}.pt')
     h5_file_path = os.path.join(CONFIG['directories']['patches_h5_directory'], f'{slide_id}.h5')
 
