@@ -29,7 +29,7 @@ CONFIG = {
   'do_save_masks': False,
   'do_stitching': False,
   'selective_slides': True,
-  'selective_slides_csv': '../data_splits/train_0.csv',
+  'selective_slides_csv': os.path.join(os.path.dirname(__file__), '..', 'data_splits', 'train_0.csv'),
   'directories': {
     'slides_directory': os.path.join(DATASET_BASE_DIRECTORY, DATASET_SLIDES_FOLDER_NAME),
     'save_base_directory': os.path.join(OUTPUT_BASE_DIRECTORY, 'create_patches'),
@@ -152,7 +152,7 @@ def segment_and_patch(
 ) -> dict:
   if selective_slides and selective_slides_csv is not None:
     selective_slides_df = pd.read_csv(selective_slides_csv)
-    selective_slides_ids = selective_slides_df['slide_id'].tolist()
+    selective_slides_ids = selective_slides_df['image_id'].tolist()
   
   slides = []
   for root, dirs, filenames in os.walk(slides_directory):
