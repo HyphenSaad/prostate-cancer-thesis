@@ -378,7 +378,9 @@ def main():
     skip_existing = CONFIG['skip_existing'],
     verbose = CONFIG['verbose'],
     do_save_masks=CONFIG['do_save_masks'],
-    do_stitching=CONFIG['do_stitching']
+    do_stitching=CONFIG['do_stitching'],
+    selective_slides=CONFIG['selective_slides'],
+    selective_slides_csv=CONFIG['selective_slides_csv']
   )
   
   logger.success("Patch Creation Completed Successfully!")
