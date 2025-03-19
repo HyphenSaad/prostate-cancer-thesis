@@ -9,7 +9,7 @@ from tqdm import tqdm
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
-from constants.misc import DATASET_BASE_DIRECTORY, OUTPUT_BASE_DIRECTORY
+from constants.misc import DATASET_BASE_DIRECTORY, DATASET_SLIDES_FOLDER_NAME, OUTPUT_BASE_DIRECTORY
 from constants.configs import CREATE_PATCHES_PRESET
 from utils.helper import create_directories
 from utils.wsi_core.batch_process_utils import initialize_dataframe
@@ -26,7 +26,7 @@ CONFIG = {
   'stride_size': 512,
   'skip_existing': True,
   'directories': {
-    'slides_directory': os.path.join(DATASET_BASE_DIRECTORY, 'slides'),
+    'slides_directory': os.path.join(DATASET_BASE_DIRECTORY, DATASET_SLIDES_FOLDER_NAME),
     'save_base_directory': os.path.join(OUTPUT_BASE_DIRECTORY, 'create_patches'),
     'patches_save_directory': os.path.join(OUTPUT_BASE_DIRECTORY, 'create_patches', 'patches'),
     'masks_save_directory': os.path.join(OUTPUT_BASE_DIRECTORY, 'create_patches', 'masks'),

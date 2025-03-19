@@ -12,7 +12,7 @@ from tqdm import tqdm
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
-from constants.misc import DATASET_BASE_DIRECTORY, OUTPUT_BASE_DIRECTORY
+from constants.misc import DATASET_BASE_DIRECTORY, DATASET_SLIDES_FOLDER_NAME, OUTPUT_BASE_DIRECTORY
 from utils.helper import create_directories
 from utils.wsi_core.whole_slide_image import ImgReader
 from utils.logger import Logger
@@ -25,7 +25,7 @@ CONFIG = {
   'patch_size': 512,
   'num_workers': os.cpu_count(),
   'directories': {
-    'slides_directory': os.path.join(DATASET_BASE_DIRECTORY, 'slides'),
+    'slides_directory': os.path.join(DATASET_BASE_DIRECTORY, DATASET_SLIDES_FOLDER_NAME),
     'patches_h5_directory': os.path.join(OUTPUT_BASE_DIRECTORY, 'create_patches', 'patches'),
     'save_base_directory': os.path.join(OUTPUT_BASE_DIRECTORY, 'extract_patches'),
   },
