@@ -4,6 +4,7 @@ warnings.filterwarnings('ignore')
 import os 
 import sys
 import time
+import pandas as pd
 import numpy as np
 from tqdm import tqdm
 
@@ -25,6 +26,10 @@ CONFIG = {
   'patch_size': 512,
   'stride_size': 512,
   'skip_existing': True,
+  'do_save_masks': False,
+  'do_stitching': False,
+  'selective_slides': True,
+  'selective_slides_csv': '../data_splits/train_0.csv',
   'directories': {
     'slides_directory': os.path.join(DATASET_BASE_DIRECTORY, DATASET_SLIDES_FOLDER_NAME),
     'save_base_directory': os.path.join(OUTPUT_BASE_DIRECTORY, 'create_patches'),
@@ -141,12 +146,21 @@ def segment_and_patch(
   do_save_masks: bool = True,
   do_patch: bool = True,
   do_stitching: bool = True,
-  verbose: bool = False
+  verbose: bool = False,
+  selective_slides: bool = False,
+  selective_slides_csv: str = None
 ) -> dict:
+  if selective_slides and selective_slides_csv is not None:
+    selective_slides_df = pd.read_csv(selective_slides_csv)
+    selective_slides_ids = selective_slides_df['slide_id'].tolist()
+  
   slides = []
   for root, dirs, filenames in os.walk(slides_directory):
     for filename in filenames:
       if filename.endswith(slides_format):
+        if selective_slides:
+          slide_id = os.path.basename(filename).split('.')[0]
+          if slide_id not in selective_slides_ids: continue
         slides.append(os.path.join(root, filename))
 
   seg_params, filter_params, vis_params, patch_params = transform_presets(preset)
@@ -362,7 +376,9 @@ def main():
     patch_level = CONFIG['patch_level'],
     slides_format = CONFIG['slides_format'],
     skip_existing = CONFIG['skip_existing'],
-    verbose = CONFIG['verbose']
+    verbose = CONFIG['verbose'],
+    do_save_masks=CONFIG['do_save_masks'],
+    do_stitching=CONFIG['do_stitching']
   )
   
   logger.success("Patch Creation Completed Successfully!")
