@@ -190,6 +190,24 @@ def load_arguments():
     default = CONFIG['verbose'],
     help = f"Verbose (default: {CONFIG['verbose']})"
   )
+  parser.add_argument(
+    "--dataset-base-directory",
+    type = str,
+    default = DATASET_BASE_DIRECTORY,
+    help = f"Dataset Base Directory (default: {DATASET_BASE_DIRECTORY})"
+  )
+  parser.add_argument(
+    "--dataset-info-file-name",
+    type = str,
+    default = DATASET_INFO_FILE_NAME,
+    help = f"Dataset Info File Name (default: {DATASET_INFO_FILE_NAME})"
+  )
+  parser.add_argument(
+    "--output-base-directory",
+    type = str,
+    default = OUTPUT_BASE_DIRECTORY,
+    help = f"Output Base Directory (default: {OUTPUT_BASE_DIRECTORY})"
+  )
 
   args = parser.parse_args()
 
@@ -200,6 +218,17 @@ def load_arguments():
   CONFIG['batch_size'] = args.batch_size
   CONFIG['patch_size'] = args.patch_size
   CONFIG['verbose'] = args.verbose
+  
+  dataset_base_dir = args.dataset_base_directory
+  dataset_info_file = args.dataset_info_file_name
+  output_base_dir = args.output_base_directory
+  
+  CONFIG['dataset_info_csv'] = os.path.join(dataset_base_dir, dataset_info_file)
+  CONFIG['processed_dataset_info_csv'] = os.path.join(output_base_dir, 'extract_features', 'processed_dataset_info.csv')
+  CONFIG['directories']['patches_h5_directory'] = os.path.join(output_base_dir, 'create_patches', 'patches')
+  CONFIG['directories']['extract_patches_directory'] = os.path.join(output_base_dir, 'extract_patches')
+  CONFIG['directories']['save_base_directory'] = os.path.join(output_base_dir, 'extract_features')
+  CONFIG['directories']['features_pt_directory'] = os.path.join(output_base_dir, 'extract_features', 'pt_files')
 
 def main():
   logger.draw_header("Extract Features From Patches")

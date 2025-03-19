@@ -6,6 +6,7 @@ import sys
 import time
 import pandas as pd
 import numpy as np
+import argparse
 from tqdm import tqdm
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
@@ -353,12 +354,117 @@ def show_configs():
   logger.text(f"> Stride Size: {CONFIG['stride_size']}")
   logger.empty_line()
 
+def load_arguments():
+  parser = argparse.ArgumentParser(description = "Create Patches From Slides")
+  parser.add_argument(
+    "--slides-format",
+    type = str,
+    default = CONFIG['slides_format'],
+    help = f"Slides Format (default: {CONFIG['slides_format']})"
+  )
+  parser.add_argument(
+    "--patch-level",
+    type = int,
+    default = CONFIG['patch_level'],
+    help = f"Patch Level (default: {CONFIG['patch_level']})"
+  )
+  parser.add_argument(
+    "--patch-size",
+    type = int,
+    default = CONFIG['patch_size'],
+    help = f"Patch Size (default: {CONFIG['patch_size']})"
+  )
+  parser.add_argument(
+    "--stride-size",
+    type = int,
+    default = CONFIG['stride_size'],
+    help = f"Stride Size (default: {CONFIG['stride_size']})"
+  )
+  parser.add_argument(
+    "--skip-existing",
+    type = bool,
+    default = CONFIG['skip_existing'],
+    help = f"Skip Existing (default: {CONFIG['skip_existing']})"
+  )
+  parser.add_argument(
+    "--save-masks",
+    type = bool,
+    default = CONFIG['do_save_masks'],
+    help = f"Save Masks (default: {CONFIG['do_save_masks']})"
+  )
+  parser.add_argument(
+    "--stitching",
+    type = bool,
+    default = CONFIG['do_stitching'],
+    help = f"Perform Stitching (default: {CONFIG['do_stitching']})"
+  )
+  parser.add_argument(
+    "--selective-slides",
+    type = bool,
+    default = CONFIG['selective_slides'],
+    help = f"Use Selective Slides (default: {CONFIG['selective_slides']})"
+  )
+  parser.add_argument(
+    "--selective-slides-csv",
+    type = str,
+    default = CONFIG['selective_slides_csv'],
+    help = f"Selective Slides CSV Path (default: {CONFIG['selective_slides_csv']})"
+  )
+  parser.add_argument(
+    "--verbose",
+    type = bool,
+    default = CONFIG['verbose'],
+    help = f"Verbose (default: {CONFIG['verbose']})"
+  )
+  parser.add_argument(
+    "--dataset-base-directory",
+    type = str,
+    default = DATASET_BASE_DIRECTORY,
+    help = f"Dataset Base Directory (default: {DATASET_BASE_DIRECTORY})"
+  )
+  parser.add_argument(
+    "--dataset-slides-folder-name",
+    type = str,
+    default = DATASET_SLIDES_FOLDER_NAME,
+    help = f"Dataset Slides Folder Name (default: {DATASET_SLIDES_FOLDER_NAME})"
+  )
+  parser.add_argument(
+    "--output-base-directory",
+    type = str,
+    default = OUTPUT_BASE_DIRECTORY,
+    help = f"Output Base Directory (default: {OUTPUT_BASE_DIRECTORY})"
+  )
+
+  args = parser.parse_args()
+  
+  CONFIG['slides_format'] = args.slides_format
+  CONFIG['patch_level'] = args.patch_level
+  CONFIG['patch_size'] = args.patch_size
+  CONFIG['stride_size'] = args.stride_size
+  CONFIG['skip_existing'] = args.skip_existing
+  CONFIG['do_save_masks'] = args.save_masks
+  CONFIG['do_stitching'] = args.stitching
+  CONFIG['selective_slides'] = args.selective_slides
+  CONFIG['selective_slides_csv'] = args.selective_slides_csv
+  CONFIG['verbose'] = args.verbose
+  
+  dataset_base_dir = args.dataset_base_directory
+  dataset_slides_folder = args.dataset_slides_folder_name
+  output_base_dir = args.output_base_directory
+  
+  CONFIG['directories']['slides_directory'] = os.path.join(dataset_base_dir, dataset_slides_folder)
+  CONFIG['directories']['save_base_directory'] = os.path.join(output_base_dir, 'create_patches')
+  CONFIG['directories']['patches_save_directory'] = os.path.join(output_base_dir, 'create_patches', 'patches')
+  CONFIG['directories']['masks_save_directory'] = os.path.join(output_base_dir, 'create_patches', 'masks')
+  CONFIG['directories']['stitches_save_directory'] = os.path.join(output_base_dir, 'create_patches', 'stitches')
+
 def main():
   logger.draw_header("Create Patches From Slides")
   
   logger.info("Creating Directories...")
   create_directories(CONFIG['directories'])
 
+  load_arguments()
   show_configs()
   
   logger.info("Starting Patch Creation Process...")

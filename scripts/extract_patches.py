@@ -6,6 +6,7 @@ import sys
 import h5py
 import glob
 import time
+import argparse
 import openslide
 from multiprocessing.pool import Pool
 from tqdm import tqdm
@@ -104,8 +105,76 @@ def show_configs():
   logger.text(f"> Number of Threads: {CONFIG['num_workers']}")
   logger.empty_line()
 
+def load_arguments():
+  parser = argparse.ArgumentParser(description = "Extract Patches From Slides")
+  parser.add_argument(
+    "--slides-format",
+    type = str,
+    default = CONFIG['slides_format'],
+    help = f"Slides Format (default: {CONFIG['slides_format']})"
+  )
+  parser.add_argument(
+    "--patch-level",
+    type = int,
+    default = CONFIG['patch_level'],
+    help = f"Patch Level (default: {CONFIG['patch_level']})"
+  )
+  parser.add_argument(
+    "--patch-size",
+    type = int,
+    default = CONFIG['patch_size'],
+    help = f"Patch Size (default: {CONFIG['patch_size']})"
+  )
+  parser.add_argument(
+    "--num-workers",
+    type = int,
+    default = CONFIG['num_workers'],
+    help = f"Number of Workers (default: {CONFIG['num_workers']})"
+  )
+  parser.add_argument(
+    "--verbose",
+    type = bool,
+    default = CONFIG['verbose'],
+    help = f"Verbose (default: {CONFIG['verbose']})"
+  )
+  parser.add_argument(
+    "--dataset-base-directory",
+    type = str,
+    default = DATASET_BASE_DIRECTORY,
+    help = f"Dataset Base Directory (default: {DATASET_BASE_DIRECTORY})"
+  )
+  parser.add_argument(
+    "--dataset-slides-folder-name",
+    type = str,
+    default = DATASET_SLIDES_FOLDER_NAME,
+    help = f"Dataset Slides Folder Name (default: {DATASET_SLIDES_FOLDER_NAME})"
+  )
+  parser.add_argument(
+    "--output-base-directory",
+    type = str,
+    default = OUTPUT_BASE_DIRECTORY,
+    help = f"Output Base Directory (default: {OUTPUT_BASE_DIRECTORY})"
+  )
+
+  args = parser.parse_args()
+  
+  CONFIG['slides_format'] = args.slides_format
+  CONFIG['patch_level'] = args.patch_level
+  CONFIG['patch_size'] = args.patch_size
+  CONFIG['num_workers'] = args.num_workers
+  CONFIG['verbose'] = args.verbose
+  
+  dataset_base_dir = args.dataset_base_directory
+  dataset_slides_folder = args.dataset_slides_folder_name
+  output_base_dir = args.output_base_directory
+  
+  CONFIG['directories']['slides_directory'] = os.path.join(dataset_base_dir, dataset_slides_folder)
+  CONFIG['directories']['patches_h5_directory'] = os.path.join(output_base_dir, 'create_patches', 'patches')
+  CONFIG['directories']['save_base_directory'] = os.path.join(output_base_dir, 'extract_patches')
+
 def main():
   logger.draw_header("Extract Patches From Slides")
+  load_arguments()
   
   logger.info("Extracting Patches From Slides...")
   start_time = time.time()
