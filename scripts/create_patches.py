@@ -352,6 +352,11 @@ def show_configs():
   logger.text(f"> Patch Level: {CONFIG['patch_level']}")
   logger.text(f"> Patch Size: {CONFIG['patch_size']}")
   logger.text(f"> Stride Size: {CONFIG['stride_size']}")
+  logger.text(f"> Skip Existing: {CONFIG['skip_existing']}")
+  logger.text(f"> Save Masks: {CONFIG['do_save_masks']}")
+  logger.text(f"> Perform Stitching: {CONFIG['do_stitching']}")
+  logger.text(f"> Use Selective Slides: {CONFIG['selective_slides']}")
+  logger.text(f"> Selective Slides CSV: {CONFIG['selective_slides_csv']}")
   logger.empty_line()
 
 def load_arguments():
@@ -460,11 +465,12 @@ def load_arguments():
 
 def main():
   logger.draw_header("Create Patches From Slides")
+
+  load_arguments()
   
   logger.info("Creating Directories...")
   create_directories(CONFIG['directories'])
-
-  load_arguments()
+  
   show_configs()
   
   logger.info("Starting Patch Creation Process...")
