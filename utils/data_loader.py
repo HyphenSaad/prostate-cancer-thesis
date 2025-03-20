@@ -12,8 +12,8 @@ from utils.clam_utils import generate_split, nth
 
 class GenericWSIClassificationDataset(Dataset):
     def __init__(self,
-      csv_path,
-      label_column,
+      csv_path = None,
+      label_column = None,
       label_dict = {},
       patient_voting = 'max',
       verbose = False,
