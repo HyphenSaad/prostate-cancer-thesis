@@ -1,4 +1,4 @@
 from enum import Enum
 
 class MILModels(Enum):
-  pass
+  TRANS_MIL = 'trans_mil'
