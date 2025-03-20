@@ -12,7 +12,7 @@ import torch
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
-from constants.misc import OUTPUT_BASE_DIRECTORY
+from constants.misc import OUTPUT_BASE_DIRECTORY, DATASET_BASE_DIRECTORY, DATASET_INFO_FILE_NAME
 from constants.mil_models import MILModels
 from constants.encoders import Encoders
 from utils.helper import create_directories
@@ -33,9 +33,13 @@ CONFIG = {
   'patch_size': 512,
   'in_dim': 1024,
   'max_epochs': 10,
+  'dataset_info_csv': os.path.join(DATASET_BASE_DIRECTORY, DATASET_INFO_FILE_NAME),
   'directories': {
     'save_base_directory': os.path.join(OUTPUT_BASE_DIRECTORY, 'train'),
     'create_splits_directory': os.path.join(OUTPUT_BASE_DIRECTORY, 'create_splits'),
+    'create_patches_directory': os.path.join(OUTPUT_BASE_DIRECTORY, 'create_patches', 'patches'),
+    'extract_patches_directory': os.path.join(OUTPUT_BASE_DIRECTORY, 'extract_patches'),
+    'features_pt_directory': os.path.join(OUTPUT_BASE_DIRECTORY, 'extract_features', 'pt_files'),
   },
   'verbose': True,
 }
@@ -51,10 +55,134 @@ def seed_torch(seed = 1):
   torch.backends.cudnn.benchmark = True
   torch.backends.cudnn.deterministic = True
 
+def show_configs():
+  logger.empty_line()
+  logger.info("Using Configurations:")
+  logger.text(f"> Backbone: {CONFIG['backbone']}")
+  logger.text(f"> MIL Model: {CONFIG['mil_model']}")
+  logger.text(f"> Drop Out: {CONFIG['drop_out']}")
+  logger.text(f"> Number of Classes: {CONFIG['n_classes']}")
+  logger.text(f"> Learning Rate: {CONFIG['learning_rate']}")
+  logger.text(f"> K-Fold: {CONFIG['k_fold']}")
+  logger.text(f"> Patch Size: {CONFIG['patch_size']}")
+  logger.text(f"> Input Dimension: {CONFIG['in_dim']}")
+  logger.text(f"> Max Epochs: {CONFIG['max_epochs']}")
+  logger.text(f"> Dataset Info CSV: {CONFIG['dataset_info_csv']}")
+  logger.text(f"> Verbose: {CONFIG['verbose']}")
+  logger.empty_line()
+
+def load_arguments():
+  parser = argparse.ArgumentParser(description="Train MIL Models")
+  parser.add_argument(
+    "--backbone",
+    type=str,
+    default=CONFIG['backbone'],
+    help=f"Backbone encoder model (default: {CONFIG['backbone']})"
+  )
+  parser.add_argument(
+    "--mil-model",
+    type=str,
+    default=CONFIG['mil_model'],
+    help=f"MIL model type (default: {CONFIG['mil_model']})"
+  )
+  parser.add_argument(
+    "--drop-out",
+    type=bool,
+    default=CONFIG['drop_out'],
+    help=f"Use dropout (default: {CONFIG['drop_out']})"
+  )
+  parser.add_argument(
+    "--n-classes",
+    type=int,
+    default=CONFIG['n_classes'],
+    help=f"Number of classes (default: {CONFIG['n_classes']})"
+  )
+  parser.add_argument(
+    "--learning-rate",
+    type=float,
+    default=CONFIG['learning_rate'],
+    help=f"Learning rate (default: {CONFIG['learning_rate']})"
+  )
+  parser.add_argument(
+    "--k-fold",
+    type=int,
+    default=CONFIG['k_fold'],
+    help=f"Number of folds (default: {CONFIG['k_fold']})"
+  )
+  parser.add_argument(
+    "--patch-size",
+    type=int,
+    default=CONFIG['patch_size'],
+    help=f"Patch size (default: {CONFIG['patch_size']})"
+  )
+  parser.add_argument(
+    "--in-dim",
+    type=int,
+    default=CONFIG['in_dim'],
+    help=f"Input dimension (default: {CONFIG['in_dim']})"
+  )
+  parser.add_argument(
+    "--max-epochs",
+    type=int,
+    default=CONFIG['max_epochs'],
+    help=f"Maximum epochs (default: {CONFIG['max_epochs']})"
+  )
+  parser.add_argument(
+    "--dataset-info-csv",
+    type=str,
+    default=CONFIG['dataset_info_csv'],
+    help=f"Dataset info CSV path (default: {CONFIG['dataset_info_csv']})"
+  )
+  parser.add_argument(
+    "--output-base-directory",
+    type=str,
+    default=OUTPUT_BASE_DIRECTORY,
+    help=f"Output base directory (default: {OUTPUT_BASE_DIRECTORY})"
+  )
+  parser.add_argument(
+    "--verbose",
+    type=bool,
+    default=CONFIG['verbose'],
+    help=f"Verbose mode (default: {CONFIG['verbose']})"
+  )
+  
+  args = parser.parse_args()
+  
+  CONFIG['backbone'] = args.backbone
+  CONFIG['mil_model'] = args.mil_model
+  CONFIG['drop_out'] = args.drop_out
+  CONFIG['n_classes'] = args.n_classes
+  CONFIG['learning_rate'] = args.learning_rate
+  CONFIG['k_fold'] = args.k_fold
+  CONFIG['patch_size'] = args.patch_size
+  CONFIG['in_dim'] = args.in_dim
+  CONFIG['max_epochs'] = args.max_epochs
+  CONFIG['dataset_info_csv'] = args.dataset_info_csv
+  CONFIG['verbose'] = args.verbose
+  
+  output_base_dir = args.output_base_directory
+  
+  CONFIG['directories']['save_base_directory'] = os.path.join(output_base_dir, 'train')
+  CONFIG['directories']['create_splits_directory'] = os.path.join(output_base_dir, 'create_splits')
+  CONFIG['directories']['create_patches_directory'] = os.path.join(output_base_dir, 'create_patches', 'patches')
+  CONFIG['directories']['extract_patches_directory'] = os.path.join(output_base_dir, 'extract_patches')
+  CONFIG['directories']['features_pt_directory'] = os.path.join(output_base_dir, 'extract_features', 'pt_files')
+
 def main():
+  logger.draw_header("Train MIL Models")
+  load_arguments()
+  
+  logger.info("Training MIL models...")
+  start_time = time.time()
+
+  logger.info("Creating Directories...")
   create_directories(CONFIG['directories'])
 
+  show_configs()
+
   folds = np.arange(0, CONFIG['k_fold'])
+  
+  logger.info("Loading dataset...")
   dataset = GenericMILDataset(
     patches_dir = CONFIG['directories']['create_patches_directory'],
     extract_patches_dir = CONFIG['directories']['extract_patches_directory'],
@@ -73,8 +201,12 @@ def main():
   all_val_f1 = []
 
   for fold in folds:
+    logger.info("Training fold {}/{}...", fold+1, CONFIG['k_fold'])
+    fold_start_time = time.time()
+    
     seed_torch()
-
+    
+    logger.info("Setting up dataset split for fold {}...", fold)
     dataset_split = dataset.return_splits(
       CONFIG['backbone'],
       CONFIG['patch_size'], 
@@ -83,6 +215,7 @@ def main():
     )
 
     drop_out = 0.25 if CONFIG['drop_out'] else 0.0
+    logger.info("Initializing training engine...")
     train_engine = TrainEngine(
       datasets = dataset_split,
       fold = fold,
@@ -96,7 +229,8 @@ def main():
       verbose = CONFIG['verbose'],
     )
 
-    results, test_auc, val_auc, test_acc, val_acc, test_f1, val_f1  = train_engine.train_model(fold)
+    logger.info("Starting model training for fold {}...", fold)
+    results, test_auc, val_auc, test_acc, val_acc, test_f1, val_f1 = train_engine.train_model(fold)
     all_test_auc.append(test_auc)
     all_val_auc.append(val_auc)
     all_test_acc.append(test_acc)
@@ -104,16 +238,23 @@ def main():
     all_test_f1.append(test_f1)
     all_val_f1.append(val_f1)
 
-    # filename = os.path.join(args.results_dir, 'split_{}_results.pkl'.format(i))
     filename = os.path.join(CONFIG['directories']['save_base_directory'], 'split_{}_results.pkl'.format(fold))
     save_pkl(filename, results)
+    
+    fold_time = time.time() - fold_start_time
+    logger.info("Fold {}/{} completed in {:.2f} seconds ({:.2f} minutes)", 
+                fold+1, CONFIG['k_fold'], fold_time, fold_time/60)
+    logger.info("Fold {} results - Test AUC: {:.4f}, Val AUC: {:.4f}", 
+                fold, test_auc, val_auc)
+    logger.empty_line()
 
+  logger.info("Saving summary results...")
   final_df = pd.DataFrame({
     'folds': folds,
     'test_auc': all_test_auc, 
     'val_auc': all_val_auc,
     'test_acc': all_test_acc,
-    'val_acc' : all_val_acc,
+    'val_acc': all_val_acc,
     'test_f1': all_test_f1,
     'val_f1': all_val_f1
   })
@@ -122,7 +263,18 @@ def main():
     save_name = 'summary_partial_{}_{}.csv'.format(folds[0], folds[-1])
   else:
     save_name = 'summary.csv'
+  
   final_df.to_csv(os.path.join(CONFIG['directories']['save_base_directory'], save_name))
+  
+  total_time = time.time() - start_time
+  logger.empty_line()
+  logger.info("Training completed!")
+  logger.info("Total folds processed: {}", len(folds))
+  logger.info("Average Test AUC: {:.4f}", np.mean(all_test_auc))
+  logger.info("Average Val AUC: {:.4f}", np.mean(all_val_auc))
+  logger.info("Total processing time: {:.2f} seconds ({:.2f} minutes)", 
+              total_time, total_time/60)
+  logger.success("MIL model training completed successfully!")
 
 if __name__ == '__main__':
   main()
