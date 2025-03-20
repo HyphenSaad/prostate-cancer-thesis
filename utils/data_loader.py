@@ -259,11 +259,11 @@ class GenericMILDataset(GenericWSIClassificationDataset):
     slide_id = self.slide_data['slide_id'][index]
     label = self.slide_data['label'][index]
 
-    if self.extract_patches_dir is None:
+    if not hasattr(self, 'extract_patches_dir'):
       self.extract_patches_dir = "/kaggle/working/output/extract_patches"
-    if self.patches_dir is None:
+    if not hasattr(self, 'patches_dir'):
       self.patches_dir = "/kaggle/working/output/create_patches/patches"
-    if self.features_pt_directory is None:
+    if not hasattr(self, 'features_pt_directory'):
       self.features_pt_directory = "/kaggle/working/output/extract_features/pt_files"
       
     img_root = os.path.join(self.extract_patches_dir, slide_id)
@@ -305,9 +305,7 @@ class GenericMILDataset(GenericWSIClassificationDataset):
     self.patch_size = size
 
 class GenericSplit(GenericMILDataset):
-    def __init__(self, slide_data, num_classes = 2):
-      super(GenericSplit, self).__init__()
-      
+    def __init__(self, slide_data, num_classes = 2):      
       self.use_h5 = False
       self.slide_data = slide_data
       self.num_classes = num_classes
