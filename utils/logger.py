@@ -34,7 +34,6 @@ class Logger:
     
     formatted_message = f"{prefix} {message}{Style.RESET_ALL}"
     
-    # Use tqdm.write if available and requested, to avoid breaking progress bars
     if use_tqdm:
       tqdm.write(formatted_message)
     else:

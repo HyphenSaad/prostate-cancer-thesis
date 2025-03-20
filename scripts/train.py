@@ -199,6 +199,12 @@ def main():
   all_val_acc = []
   all_test_f1 = []
   all_val_f1 = []
+  all_test_precision = []
+  all_val_precision = []
+  all_test_recall = []
+  all_val_recall = []
+  all_test_kappa = []
+  all_val_kappa = []
 
   for fold in folds:
     logger.info("Training fold {}/{}...", fold+1, CONFIG['k_fold'])
@@ -230,14 +236,28 @@ def main():
     )
 
     logger.info("Starting model training for fold {}...", fold)
-    results, test_auc, val_auc, test_acc, val_acc, test_f1, val_f1 = train_engine.train_model(fold)
+    results, test_auc, val_auc, test_acc, val_acc, test_f1, val_f1, test_metrics, val_metrics = train_engine.train_model(fold)
     all_test_auc.append(test_auc)
     all_val_auc.append(val_auc)
     all_test_acc.append(test_acc)
     all_val_acc.append(val_acc)
     all_test_f1.append(test_f1)
     all_val_f1.append(val_f1)
+    all_test_precision.append(test_metrics['precision_macro'])
+    all_val_precision.append(val_metrics['precision_macro'])
+    all_test_recall.append(test_metrics['recall_macro'])
+    all_val_recall.append(val_metrics['recall_macro'])
+    all_test_kappa.append(test_metrics['cohens_kappa'])
+    all_val_kappa.append(val_metrics['cohens_kappa'])
 
+    # Save detailed metrics for this fold
+    fold_metrics = {
+        'test': test_metrics,
+        'val': val_metrics
+    }
+    save_pkl(os.path.join(CONFIG['directories']['save_base_directory'], 'split_{}_metrics.pkl'.format(fold)), fold_metrics)
+    
+    # Save regular results
     filename = os.path.join(CONFIG['directories']['save_base_directory'], 'split_{}_results.pkl'.format(fold))
     save_pkl(filename, results)
     
@@ -256,7 +276,13 @@ def main():
     'test_acc': all_test_acc,
     'val_acc': all_val_acc,
     'test_f1': all_test_f1,
-    'val_f1': all_val_f1
+    'val_f1': all_val_f1,
+    'test_precision': all_test_precision,
+    'val_precision': all_val_precision,
+    'test_recall': all_test_recall,
+    'val_recall': all_val_recall,
+    'test_kappa': all_test_kappa,
+    'val_kappa': all_val_kappa
   })
 
   if len(folds) != CONFIG['k_fold']:
@@ -270,8 +296,25 @@ def main():
   logger.empty_line()
   logger.info("Training completed!")
   logger.info("Total folds processed: {}", len(folds))
-  logger.info("Average Test AUC: {:.4f}", np.mean(all_test_auc))
-  logger.info("Average Val AUC: {:.4f}", np.mean(all_val_auc))
+  
+  # Print comprehensive results summary
+  logger.info("===== Performance Metrics Summary =====")
+  logger.info("--- Test Metrics ---")
+  logger.info("Average Accuracy: {:.4f}", np.mean(all_test_acc))
+  logger.info("Average AUC: {:.4f}", np.mean(all_test_auc))
+  logger.info("Average F1 Score: {:.4f}", np.mean(all_test_f1))
+  logger.info("Average Precision: {:.4f}", np.mean(all_test_precision))
+  logger.info("Average Recall: {:.4f}", np.mean(all_test_recall))
+  logger.info("Average Cohen's Kappa: {:.4f}", np.mean(all_test_kappa))
+  
+  logger.info("--- Validation Metrics ---")
+  logger.info("Average Accuracy: {:.4f}", np.mean(all_val_acc))
+  logger.info("Average AUC: {:.4f}", np.mean(all_val_auc))
+  logger.info("Average F1 Score: {:.4f}", np.mean(all_val_f1))
+  logger.info("Average Precision: {:.4f}", np.mean(all_val_precision))
+  logger.info("Average Recall: {:.4f}", np.mean(all_val_recall))
+  logger.info("Average Cohen's Kappa: {:.4f}", np.mean(all_val_kappa))
+  
   logger.info("Total processing time: {:.2f} seconds ({:.2f} minutes)", 
               total_time, total_time/60)
   logger.success("MIL model training completed successfully!")

@@ -6,6 +6,7 @@ from torch.utils.tensorboard.writer import SummaryWriter
 from sklearn.preprocessing import label_binarize
 from sklearn.metrics import roc_auc_score, roc_curve, f1_score
 from sklearn.metrics import auc as calc_auc
+from sklearn.metrics import precision_score, recall_score, cohen_kappa_score, confusion_matrix, classification_report, accuracy_score
 from torch.utils.tensorboard.writer import SummaryWriter
 from tqdm import tqdm
 
@@ -70,7 +71,7 @@ class TrainEngine:
     self.drop_out = drop_out    
     self.bag_loss = bag_loss
     self.verbose = verbose
-    self.logger = Logger()  # Initialize the logger
+    self.logger = Logger()
 
     self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -201,11 +202,11 @@ class TrainEngine:
     
     # test_func on val loader
     self.logger.info("Evaluating on validation set...", timestamp=True)
-    _, val_error, val_auc, _, _, val_f1 = test_func(self.val_loader)
+    _, val_error, val_auc, _, _, val_f1, val_metrics = test_func(self.val_loader)
     
     # test on test loader
     self.logger.info("Evaluating on test set...", timestamp=True)
-    results_dict, test_error, test_auc, acc_logger, _, test_f1 = test_func(self.test_loader)
+    results_dict, test_error, test_auc, acc_logger, df, test_f1, test_metrics = test_func(self.test_loader)
     
     self.logger.success("Final Results:", timestamp=True)
     self.logger.success("Test Error: {:.4f}, ROC AUC: {:.4f}, F1 Score: {:.4f}".format(test_error, test_auc, test_f1))
@@ -220,9 +221,15 @@ class TrainEngine:
     self.writer.add_scalar('final/val_auc', val_auc, 0)
     self.writer.add_scalar('final/test_error', test_error, 0)
     self.writer.add_scalar('final/test_auc', test_auc, 0)
+    self.writer.add_scalar('final/val_precision', val_metrics['precision_macro'], 0)
+    self.writer.add_scalar('final/test_precision', test_metrics['precision_macro'], 0)
+    self.writer.add_scalar('final/val_recall', val_metrics['recall_macro'], 0)
+    self.writer.add_scalar('final/test_recall', test_metrics['recall_macro'], 0)
+    self.writer.add_scalar('final/val_kappa', val_metrics['cohens_kappa'], 0)
+    self.writer.add_scalar('final/test_kappa', test_metrics['cohens_kappa'], 0)
     self.writer.close()
     
-    return results_dict, test_auc, val_auc, 1-test_error, 1-val_error, test_f1, val_f1
+    return results_dict, test_auc, val_auc, 1-test_error, 1-val_error, test_f1, val_f1, test_metrics, val_metrics
 
   def train_loop_subtyping(self, epoch):   
     self.model.train()
@@ -508,9 +515,21 @@ class TrainEngine:
 
     test_error /= len(loader)
 
+    # convert the lists of all predictions and labels to numpy arrays
+    all_Y_hat = np.concatenate(all_Y_hat)
+    all_label = np.concatenate(all_label)
+    
+    # Calculate comprehensive metrics
+    metrics = {}
+    
+    # Accuracy from error
+    metrics['accuracy'] = 1 - test_error
+    
+    # ROC AUC
     if self.n_classes == 2:
       auc = roc_auc_score(all_labels, all_probs[:, 1])
       aucs = []
+      metrics['auc'] = auc
     else:
       aucs = []
       binary_labels = label_binarize(all_labels, classes=[i for i in range(self.n_classes)])
@@ -522,20 +541,72 @@ class TrainEngine:
           aucs.append(float('nan'))
 
       auc = np.nanmean(np.array(aucs))
-        
-    # convert the lists of all predictions and labels to numpy arrays
-    all_Y_hat = np.concatenate(all_Y_hat)
-    all_label = np.concatenate(all_label)
-
-    # calculate the F1 score
+      metrics['auc'] = auc
+      metrics['class_auc'] = aucs
+    
+    # F1 Score (macro)
     f1 = f1_score(all_label, all_Y_hat, average='macro')
+    metrics['f1_macro'] = f1
+    
+    # F1 Score (weighted)
+    f1_weighted = f1_score(all_label, all_Y_hat, average='weighted')
+    metrics['f1_weighted'] = f1_weighted
+    
+    # Class-wise F1 Score
+    f1_per_class = f1_score(all_label, all_Y_hat, average=None)
+    metrics['f1_per_class'] = f1_per_class
+    
+    # Precision (macro and weighted)
+    precision_macro = precision_score(all_label, all_Y_hat, average='macro')
+    precision_weighted = precision_score(all_label, all_Y_hat, average='weighted')
+    metrics['precision_macro'] = precision_macro
+    metrics['precision_weighted'] = precision_weighted
+    
+    # Class-wise precision
+    precision_per_class = precision_score(all_label, all_Y_hat, average=None)
+    metrics['precision_per_class'] = precision_per_class
+    
+    # Recall (macro and weighted)
+    recall_macro = recall_score(all_label, all_Y_hat, average='macro')
+    recall_weighted = recall_score(all_label, all_Y_hat, average='weighted')
+    metrics['recall_macro'] = recall_macro
+    metrics['recall_weighted'] = recall_weighted
+    
+    # Class-wise recall
+    recall_per_class = recall_score(all_label, all_Y_hat, average=None)
+    metrics['recall_per_class'] = recall_per_class
+    
+    # Cohen's Kappa
+    kappa = cohen_kappa_score(all_label, all_Y_hat)
+    metrics['cohens_kappa'] = kappa
+    
+    # Confusion Matrix
+    cm = confusion_matrix(all_label, all_Y_hat)
+    metrics['confusion_matrix'] = cm
+    
+    # Classification Report (for logging purposes)
+    cr = classification_report(all_label, all_Y_hat, output_dict=True)
+    metrics['classification_report'] = cr
 
-    self.logger.success(f"Evaluation Results - Error: {test_error:.4f}, AUC: {auc:.4f}, F1: {f1:.4f}", timestamp=True)
+    # Log major metrics
+    self.logger.success(f"Evaluation Results:", timestamp=True)
+    self.logger.success(f"  Error: {test_error:.4f}")
+    self.logger.success(f"  Accuracy: {metrics['accuracy']:.4f}")
+    self.logger.success(f"  AUC: {auc:.4f}")
+    self.logger.success(f"  F1 Score (macro): {f1:.4f}")
+    self.logger.success(f"  Precision (macro): {precision_macro:.4f}")
+    self.logger.success(f"  Recall (macro): {recall_macro:.4f}")
+    self.logger.success(f"  Cohen's Kappa: {kappa:.4f}")
+    
+    # Log confusion matrix
+    self.logger.info("Confusion Matrix:")
+    self.logger.info(f"\n{cm}")
     
     if self.verbose:
       for i in range(self.n_classes):
         acc, correct, count = acc_logger.get_summary(i)
         self.logger.info('Class {}: Accuracy {:.4f}, Correct {}/{}'.format(i, acc, correct, count))
+        self.logger.info(f'  Precision: {precision_per_class[i]:.4f}, Recall: {recall_per_class[i]:.4f}, F1: {f1_per_class[i]:.4f}')
 
     results_dict = {'slide_id': slide_ids, 'Y': all_labels, 'Y_hat': all_preds}
     for c in range(self.n_classes):
@@ -546,7 +617,7 @@ class TrainEngine:
     
     df = pd.DataFrame(results_dict)
 
-    return patient_results, test_error, auc, acc_logger, df, f1
+    return patient_results, test_error, auc, acc_logger, df, f1, metrics
 
   def eval_model(self, ckpt_path):
     self.logger.info(f"Loading model checkpoint from: {ckpt_path}", timestamp=True)
@@ -562,7 +633,7 @@ class TrainEngine:
         
     self.logger.info("Running evaluation on test data...", timestamp=True)
     func = self.summary_subtyping
-    patient_results, test_error, auc, df, f1 = func(self.test_loader)
+    patient_results, test_error, auc, acc_logger, df, f1, metrics = func(self.test_loader)
     
     self.logger.success(f"Evaluation complete - Error: {test_error:.4f}, AUC: {auc:.4f}, F1: {f1:.4f}", timestamp=True)
-    return patient_results, test_error, auc, df, f1
+    return patient_results, test_error, auc, acc_logger, df, f1, metrics
