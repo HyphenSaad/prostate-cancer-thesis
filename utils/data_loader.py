@@ -3,6 +3,7 @@ import numpy as np
 import os 
 import h5py
 import torch
+import sys
 from IPython import get_ipython
 from scipy import stats
 from torch.utils.data import Dataset
@@ -260,9 +261,9 @@ class GenericMILDataset(GenericWSIClassificationDataset):
     slide_id = self.slide_data['slide_id'][index]
     label = self.slide_data['label'][index]
 
-    is_google_colab = 'google.colab' in str(get_ipython())
+    is_google_colab = 'google.colab' in sys.modules
     if not hasattr(self, 'extract_patches_dir'):
-      if is_google_colab: self.extract_patches_dir = "/content/output/extract_patches"
+      if : self.extract_patches_dir = "/content/output/extract_patches"
       else: self.extract_patches_dir = "/kaggle/working/output/extract_patches"
     if not hasattr(self, 'patches_dir'):
       if is_google_colab: self.patches_dir = "/content/output/create_patches/patches"
