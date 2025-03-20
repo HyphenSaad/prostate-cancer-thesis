@@ -233,11 +233,15 @@ class TrainEngine:
     self.logger.empty_line()
     self.logger.info('Epoch: {}/{}'.format(epoch+1, self.max_epochs), timestamp=True)
     
+    # Store debug messages to print after batch completion
+    debug_messages = []
+    
     progress_bar = tqdm(
         self.train_loader, 
         desc=f"Training Epoch {epoch+1}/{self.max_epochs}",
         disable=False, 
-        ncols=100
+        ncols=100,
+        leave=True  # Ensure progress bar is left on screen after completion
     )
     
     for batch_idx, batch in enumerate(progress_bar):
@@ -248,16 +252,14 @@ class TrainEngine:
       kwargs['iteration'] = iteration
       kwargs['image_call'] = batch['image_call']
       
-      # Core 1: if your model need specific pre-process of data and label, please implement following function,
-      # we will call to keep code clean
+      # Core 1: if your model need specific pre-process of data and label
       if hasattr(self.model, 'process_data'):
         data, label = self.model.process_data(data, label, self.device)
       else:
         data = data.to(self.device)
         label = label.to(self.device)
         
-      # Core 2: If your model has special optimizing strategy, e.g., using mutilpe optimizers, please
-      # define your own update parameter code in one_step function. You may also need to define optimizes in you MIL model.
+      # Core 2: Model optimization step
       if hasattr(self.model, 'one_step'):
         outputs = self.model.one_step(data, label, **kwargs)
         loss = outputs['loss']
@@ -265,7 +267,7 @@ class TrainEngine:
           self.call_scheduler = outputs['call_scheduler']
         logits, Y_prob, Y_hat = outputs['wsi_logits'], outputs['wsi_prob'], outputs['wsi_label']
       else:
-        # use univer code to update param
+        # use universal code to update param
         kwargs['label'] = label
         outputs = self.model(data, **kwargs)
         logits, Y_prob, Y_hat = outputs['wsi_logits'], outputs['wsi_prob'], outputs['wsi_label']
@@ -287,6 +289,7 @@ class TrainEngine:
 
       loss_value = loss.item()
       if torch.isnan(loss):
+        progress_bar.close()  # Close the progress bar before showing error
         self.logger.error('NaN loss detected!')
         if self.verbose:
           self.logger.debug('logits: {}'.format(logits))
@@ -295,11 +298,13 @@ class TrainEngine:
         raise RuntimeError('Found Nan number')
       
       # Update progress bar
+      error = calculate_error(Y_hat, label)
       progress_bar.set_postfix({
           'loss': f'{loss_value:.4f}',
-          'error': f'{calculate_error(Y_hat, label):.4f}'
+          'error': f'{error:.4f}'
       })
       
+      # Instead of printing debug messages directly, store them for later
       if (batch_idx + 1) % 20 == 0 and self.verbose:
         bag_size = data[0].shape[0] if isinstance(data, list) else data.shape[0]
         log_message = f'Batch {batch_idx+1}/{len(self.train_loader)}'
@@ -307,11 +312,15 @@ class TrainEngine:
           if 'loss' in k:
             log_message += f', {k}: {v.item():.4f}'
         log_message += f', label: {label.item()}, bag_size: {bag_size}'
-        self.logger.debug(log_message)
+        
+        # Use tqdm.write to print without breaking the progress bar
+        tqdm.write(f"[DEBUG] {log_message}")
               
-      error = calculate_error(Y_hat, label)
       train_loss += loss_value
       train_error += error
+    
+    # Close progress bar properly
+    progress_bar.close()
 
     # calculate loss and error for epoch
     train_loss /= len(self.train_loader)
@@ -350,7 +359,8 @@ class TrainEngine:
         self.val_loader, 
         desc=f"Validating Epoch {epoch+1}/{self.max_epochs}", 
         disable=False,
-        ncols=100
+        ncols=100,
+        leave=True  # Ensure progress bar is left on screen
     )
     
     with torch.no_grad():
@@ -391,6 +401,9 @@ class TrainEngine:
         
         val_loss += loss_value
         val_error += error
+    
+    # Close progress bar properly
+    progress_bar.close()
 
     val_error /= len(self.val_loader)
     val_loss /= len(self.val_loader)
@@ -448,7 +461,8 @@ class TrainEngine:
         loader, 
         desc="Evaluating", 
         disable=False,
-        ncols=100
+        ncols=100,
+        leave=True  # Ensure progress bar is left on screen
     )
     
     with torch.no_grad():
@@ -488,6 +502,9 @@ class TrainEngine:
         # Append current predictions and labels to the lists
         all_Y_hat.append(Y_hat.cpu().numpy())
         all_label.append(label.cpu().numpy())
+    
+    # Close progress bar properly
+    progress_bar.close()
 
     test_error /= len(loader)
 

@@ -1,6 +1,7 @@
 import os
 import datetime
 from colorama import Fore, Style, init
+from tqdm import tqdm
 
 init(autoreset=True)
 
@@ -19,7 +20,7 @@ class Logger:
   def _get_timestamp(self):
     return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
   
-  def _log(self, level, message, *args, timestamp=False, **kwargs):
+  def _log(self, level, message, *args, timestamp=False, use_tqdm=True, **kwargs):
     if args or kwargs:
       message = message.format(*args, **kwargs)
     
@@ -31,32 +32,43 @@ class Logger:
     else:
       prefix = f"{color}[{level}]"
     
-    print(f"{prefix} {message}{Style.RESET_ALL}")
+    formatted_message = f"{prefix} {message}{Style.RESET_ALL}"
+    
+    # Use tqdm.write if available and requested, to avoid breaking progress bars
+    if use_tqdm:
+      tqdm.write(formatted_message)
+    else:
+      print(formatted_message)
   
-  def text(self, message, *args, timestamp=False, **kwargs):
+  def text(self, message, *args, timestamp=False, use_tqdm=True, **kwargs):
     if args or kwargs: 
       message = message.format(*args, **kwargs)
     
     if timestamp:
       time_str = self._get_timestamp()
-      print(f"[{time_str}] {message}")
+      formatted_message = f"[{time_str}] {message}"
     else:
-      print(f"{message}")
+      formatted_message = f"{message}"
+    
+    if use_tqdm:
+      tqdm.write(formatted_message)
+    else:
+      print(formatted_message)
   
-  def info(self, message, *args, timestamp=False, **kwargs):
-    self._log("INFO", message, *args, timestamp=timestamp, **kwargs)
+  def info(self, message, *args, timestamp=False, use_tqdm=True, **kwargs):
+    self._log("INFO", message, *args, timestamp=timestamp, use_tqdm=use_tqdm, **kwargs)
   
-  def success(self, message, *args, timestamp=False, **kwargs):
-    self._log("SUCCESS", message, *args, timestamp=timestamp, **kwargs)
+  def success(self, message, *args, timestamp=False, use_tqdm=True, **kwargs):
+    self._log("SUCCESS", message, *args, timestamp=timestamp, use_tqdm=use_tqdm, **kwargs)
   
-  def warning(self, message, *args, timestamp=False, **kwargs):
-    self._log("WARNING", message, *args, timestamp=timestamp, **kwargs)
+  def warning(self, message, *args, timestamp=False, use_tqdm=True, **kwargs):
+    self._log("WARNING", message, *args, timestamp=timestamp, use_tqdm=use_tqdm, **kwargs)
   
-  def error(self, message, *args, timestamp=False, **kwargs):
-    self._log("ERROR", message, *args, timestamp=timestamp, **kwargs)
+  def error(self, message, *args, timestamp=False, use_tqdm=True, **kwargs):
+    self._log("ERROR", message, *args, timestamp=timestamp, use_tqdm=use_tqdm, **kwargs)
   
-  def debug(self, message, *args, timestamp=False, **kwargs):
-    self._log("DEBUG", message, *args, timestamp=timestamp, **kwargs)
+  def debug(self, message, *args, timestamp=False, use_tqdm=True, **kwargs):
+    self._log("DEBUG", message, *args, timestamp=timestamp, use_tqdm=use_tqdm, **kwargs)
 
   def draw_header(
     self, 
@@ -151,8 +163,11 @@ class Logger:
     for line in output_lines: print(line)
     self.empty_line()
 
-  def empty_line(self):
-    print()
+  def empty_line(self, use_tqdm=True):
+    if use_tqdm:
+      tqdm.write("")
+    else:
+      print()
 
   def clear_screen(self):
     os.system('cls' if os.name=='nt' else 'clear')
