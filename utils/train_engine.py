@@ -332,14 +332,17 @@ class TrainEngine:
     # calculate loss and error for epoch
     train_loss /= len(self.train_loader)
     train_error /= len(self.train_loader)
+    train_acc = 1 - train_error
 
-    self.logger.success('Epoch: {}/{}, Train Loss: {:.4f}, Train Error: {:.4f}'.format(
-        epoch+1, self.max_epochs, train_loss, train_error))
+    self.logger.success('Epoch: {}/{}, Train Loss: {:.4f}, Train Error: {:.4f}, Train Accuracy: {:.4f}'.format(
+        epoch+1, self.max_epochs, train_loss, train_error, train_acc))
     
     if self.writer:
       self.writer.add_scalar('train/loss', train_loss, epoch)
       self.writer.add_scalar('train/error', train_error, epoch)
-        
+      self.writer.add_scalar('train/accuracy', train_acc, epoch)
+    
+    # Class-specific metrics  
     if self.verbose:
       for i in range(self.n_classes):
         acc, correct, count = acc_logger.get_summary(i)
@@ -359,6 +362,10 @@ class TrainEngine:
     prob = np.zeros((len(self.val_loader), self.n_classes))
     labels = np.zeros(len(self.val_loader))    
     Y_hats = np.zeros(len(self.val_loader))    
+    
+    # Lists to store predictions and labels for comprehensive metrics
+    all_Y_hat = []
+    all_label = []
     
     self.logger.info("Validating epoch {}/{}".format(epoch+1, self.max_epochs), timestamp=True)
     
@@ -397,6 +404,10 @@ class TrainEngine:
         labels[batch_idx] = label.item()
         Y_hats[batch_idx] = Y_hat.item()
         
+        # Append current predictions and labels to the lists
+        all_Y_hat.append(Y_hat.cpu().numpy())
+        all_label.append(label.cpu().numpy())
+        
         loss_value = loss.item()
         error = calculate_error(Y_hat, label)
         
@@ -415,24 +426,105 @@ class TrainEngine:
     val_error /= len(self.val_loader)
     val_loss /= len(self.val_loader)
 
-    if self.n_classes == 2: auc = roc_auc_score(labels, prob[:, 1])
-    else: auc = roc_auc_score(labels, prob, multi_class='ovr')
+    # Convert the lists of all predictions and labels to numpy arrays
+    all_Y_hat = np.concatenate(all_Y_hat)
+    all_label = np.concatenate(all_label)
+    
+    # Calculate all metrics for the epoch
+    metrics = {}
+    
+    # Accuracy from error
+    metrics['accuracy'] = 1 - val_error
+    
+    # ROC AUC
+    if self.n_classes == 2:
+      auc = roc_auc_score(labels, prob[:, 1])
+      aucs = []
+      metrics['auc'] = auc
+    else:
+      aucs = []
+      binary_labels = label_binarize(labels, classes=[i for i in range(self.n_classes)])
+      for class_idx in range(self.n_classes):
+        if class_idx in labels:
+          fpr, tpr, _ = roc_curve(binary_labels[:, class_idx], prob[:, class_idx])
+          aucs.append(calc_auc(fpr, tpr))
+        else:
+          aucs.append(float('nan'))
 
-    # f1 score
-    f1 = f1_score(labels, Y_hats, average='macro')
-
+      auc = np.nanmean(np.array(aucs))
+      metrics['auc'] = auc
+      metrics['class_auc'] = aucs
+    
+    # F1 Score (macro)
+    f1 = f1_score(all_label, all_Y_hat, average='macro')
+    metrics['f1_macro'] = f1
+    
+    # F1 Score (weighted)
+    f1_weighted = f1_score(all_label, all_Y_hat, average='weighted')
+    metrics['f1_weighted'] = f1_weighted
+    
+    # Class-wise F1 Score
+    f1_per_class = f1_score(all_label, all_Y_hat, average=None)
+    metrics['f1_per_class'] = f1_per_class
+    
+    # Precision (macro and weighted)
+    precision_macro = precision_score(all_label, all_Y_hat, average='macro')
+    precision_weighted = precision_score(all_label, all_Y_hat, average='weighted')
+    metrics['precision_macro'] = precision_macro
+    metrics['precision_weighted'] = precision_weighted
+    
+    # Recall (macro and weighted)
+    recall_macro = recall_score(all_label, all_Y_hat, average='macro')
+    recall_weighted = recall_score(all_label, all_Y_hat, average='weighted')
+    metrics['recall_macro'] = recall_macro
+    metrics['recall_weighted'] = recall_weighted
+    
+    # Cohen's Kappa
+    kappa = cohen_kappa_score(all_label, all_Y_hat)
+    metrics['cohens_kappa'] = kappa
+    
+    # Add metrics to TensorBoard
     if self.writer:
       self.writer.add_scalar('val/loss', val_loss, epoch)
       self.writer.add_scalar('val/auc', auc, epoch)
       self.writer.add_scalar('val/error', val_error, epoch)
+      self.writer.add_scalar('val/accuracy', metrics['accuracy'], epoch)
+      self.writer.add_scalar('val/f1_macro', metrics['f1_macro'], epoch)
+      self.writer.add_scalar('val/f1_weighted', metrics['f1_weighted'], epoch)
+      self.writer.add_scalar('val/precision_macro', metrics['precision_macro'], epoch)
+      self.writer.add_scalar('val/precision_weighted', metrics['precision_weighted'], epoch)
+      self.writer.add_scalar('val/recall_macro', metrics['recall_macro'], epoch)
+      self.writer.add_scalar('val/recall_weighted', metrics['recall_weighted'], epoch)
+      self.writer.add_scalar('val/cohens_kappa', metrics['cohens_kappa'], epoch)
 
-    self.logger.success('Validation Results - Epoch: {}/{}, Loss: {:.4f}, Error: {:.4f}, AUC: {:.4f}, F1: {:.4f}'.format(
-        epoch+1, self.max_epochs, val_loss, val_error, auc, f1))
+    # Log comprehensive metrics for this epoch
+    self.logger.success('Validation Results - Epoch: {}/{}'.format(epoch+1, self.max_epochs), timestamp=True)
+    self.logger.info('  Loss: {:.4f}, Error: {:.4f}, Accuracy: {:.4f}'.format(val_loss, val_error, metrics['accuracy']))
+    self.logger.info('  AUC: {:.4f}, F1 (macro): {:.4f}, F1 (weighted): {:.4f}'.format(
+        auc, metrics['f1_macro'], metrics['f1_weighted']))
+    self.logger.info('  Precision (macro): {:.4f}, Recall (macro): {:.4f}'.format(
+        metrics['precision_macro'], metrics['recall_macro']))
+    self.logger.info('  Cohen\'s Kappa: {:.4f}'.format(metrics['cohens_kappa']))
     
+    # Class-specific metrics if in verbose mode
     if self.verbose:
+      self.logger.info('Class-specific metrics:')
       for i in range(self.n_classes):
         acc, correct, count = acc_logger.get_summary(i)
-        self.logger.info('Class {}: Accuracy {:.4f}, Correct {}/{}'.format(i, acc, correct, count))     
+        self.logger.info('  Class {}: Acc {:.4f}, F1 {:.4f}, Precision {:.4f}, Recall {:.4f}'.format(
+            i, acc, 
+            f1_per_class[i] if i < len(f1_per_class) else float('nan'),
+            metrics['precision_per_class'][i] if i < len(metrics['precision_per_class']) else float('nan'),
+            metrics['recall_per_class'][i] if i < len(metrics['recall_per_class']) else float('nan')))
+        
+        if self.writer:
+          self.writer.add_scalar('val/class_{}_acc'.format(i), acc, epoch)
+          if i < len(f1_per_class):
+            self.writer.add_scalar('val/class_{}_f1'.format(i), f1_per_class[i], epoch)
+          if i < len(metrics['precision_per_class']):
+            self.writer.add_scalar('val/class_{}_precision'.format(i), metrics['precision_per_class'][i], epoch)
+          if i < len(metrics['recall_per_class']):
+            self.writer.add_scalar('val/class_{}_recall'.format(i), metrics['recall_per_class'][i], epoch)
 
     # val_error is better than val_loss
     self.early_stopping(epoch, val_error, self.model, ckpt_name = os.path.join(self.result_dir, "s_{}_checkpoint.pt".format(self.fold)))
