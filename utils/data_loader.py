@@ -3,6 +3,7 @@ import numpy as np
 import os 
 import h5py
 import torch
+from IPython import get_ipython
 from scipy import stats
 from torch.utils.data import Dataset
 from PIL import Image
@@ -259,12 +260,16 @@ class GenericMILDataset(GenericWSIClassificationDataset):
     slide_id = self.slide_data['slide_id'][index]
     label = self.slide_data['label'][index]
 
+    is_google_colab = 'google.colab' in str(get_ipython())
     if not hasattr(self, 'extract_patches_dir'):
-      self.extract_patches_dir = "/kaggle/working/output/extract_patches"
+      if is_google_colab: self.extract_patches_dir = "/content/output/extract_patches"
+      else: self.extract_patches_dir = "/kaggle/working/output/extract_patches"
     if not hasattr(self, 'patches_dir'):
-      self.patches_dir = "/kaggle/working/output/create_patches/patches"
+      if is_google_colab: self.patches_dir = "/content/output/create_patches/patches"
+      else: self.patches_dir = "/kaggle/working/output/create_patches/patches"
     if not hasattr(self, 'features_pt_directory'):
-      self.features_pt_directory = "/kaggle/working/output/extract_features/pt_files"
+      if is_google_colab: self.features_pt_directory = "/content/output/extract_features/pt_files"
+      else: self.features_pt_directory = "/kaggle/working/output/extract_features/pt_files"
       
     img_root = os.path.join(self.extract_patches_dir, slide_id)
     coords_path = os.path.join(self.patches_dir, '{}.h5'.format(slide_id))
