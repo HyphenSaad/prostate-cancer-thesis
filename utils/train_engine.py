@@ -7,10 +7,14 @@ from sklearn.preprocessing import label_binarize
 from sklearn.metrics import roc_auc_score, roc_curve, f1_score
 from sklearn.metrics import auc as calc_auc
 from torch.utils.tensorboard.writer import SummaryWriter
+from tqdm import tqdm
 
 from mil_models import find_mil_model
 from utils.common_utils import EarlyStopping, AccuracyLogger
 from utils.clam_utils import print_network, get_split_loader, calculate_error
+from utils.logger import Logger
+
+logger = Logger()
 
 def save_splits(
   dataset_splits,
@@ -103,15 +107,16 @@ class TrainEngine:
       )
       
   def init_logger(self):
-    print('\nTraining Fold {}!'.format(self.fold))
+    logger.empty_line()
+    logger.info("Training Fold {}!", self.fold)
     
     writer_dir = os.path.join(self.result_dir, str(self.fold))
     if not os.path.isdir(writer_dir): os.mkdir(writer_dir)
     self.writer = SummaryWriter(writer_dir, flush_secs = 15)
 
-    print("Training on {} samples".format(len(self.train_split)))
-    print("Validating on {} samples".format(len(self.val_split)))
-    print("Testing on {} samples".format(len(self.test_split)))
+    logger.info("Training on {} samples", len(self.train_split))
+    logger.info("Validating on {} samples", len(self.val_split))
+    logger.info("Testing on {} samples", len(self.test_split))
 
   def get_learning_rate_scheduler(self):
     return None
@@ -132,10 +137,10 @@ class TrainEngine:
 
   def get_loss_function(self):
     if hasattr(self.model, 'loss_function'):
-      if self.verbose: print('The loss function defined in the MIL model is adopted...')
+      if self.verbose: logger.info('The loss function defined in the MIL model is adopted...')
       loss_function = self.model.loss_function
     else:
-      if self.verbose: print('Cross Entropy Loss is adopted as the loss function...')
+      if self.verbose: logger.info('Cross Entropy Loss is adopted as the loss function...')
       loss_function = torch.nn.CrossEntropyLoss()
     return loss_function
 
@@ -179,22 +184,22 @@ class TrainEngine:
       if stop: break
     
     msg = self.model.load_state_dict(torch.load(os.path.join(self.result_dir, "s_{}_checkpoint.pt".format(fold))))
-    if self.verbose:
-      print('Loading Trained Model...')
-      print(msg)
+    logger.info('Loading Trained Model...')
+    if self.verbose: logger.text(msg)
     
     # test_func on val loader
+    logger.info("Evaluating on validation set...")
     _, val_error, val_auc, _, _, val_f1 = test_func(self.val_loader)
     # test on test loader
+    logger.info("Evaluating on test set...")
     results_dict, test_error, test_auc, acc_logger, _, test_f1 = test_func(self.test_loader)
     
-    if self.verbose:
-      print('Test Error: {:.4f}, ROC AUC: {:.4f}, F1 Score: {:.4f}'.format(test_error, test_auc, test_f1))
-      print('Val Error: {:.4f}, ROC AUC: {:.4f}, F1 Score: {:.4f}'.format(val_error, val_auc, val_f1))
+    logger.info('Test Error: {:.4f}, ROC AUC: {:.4f}, F1 Score: {:.4f}', test_error, test_auc, test_f1)
+    logger.info('Val Error: {:.4f}, ROC AUC: {:.4f}, F1 Score: {:.4f}', val_error, val_auc, val_f1)
 
     for i in range(self.n_classes):
       acc, correct, count = acc_logger.get_summary(i)
-      if self.verbose: print('class {}: acc {}, correct {}/{}'.format(i, acc, correct, count))
+      logger.info('class {}: acc {}, correct {}/{}', i, acc, correct, count)
       self.writer.add_scalar('final/test_class_{}_acc'.format(i), acc, 0)
 
     self.writer.add_scalar('final/val_error', val_error, 0)
@@ -211,10 +216,17 @@ class TrainEngine:
     train_loss = 0.0
     train_error = 0.0
 
-    print('\n')
-    print('Epoch: {}'.format(epoch))
+    logger.empty_line()
+    logger.info('Epoch: {}', epoch)
     
-    for batch_idx, batch in enumerate(self.train_loader):
+    progress_bar = tqdm(
+      self.train_loader,
+      desc=f"Training Epoch {epoch}",
+      unit="batch",
+      disable=not self.verbose
+    )
+    
+    for batch_idx, batch in enumerate(progress_bar):
       iteration = epoch * len(self.train_loader) + batch_idx
       kwargs = {}
       data = batch['features']
@@ -261,19 +273,24 @@ class TrainEngine:
 
       loss_value = loss.item()
       if torch.isnan(loss):
-        print('logits:', logits)
-        print('Y_prob:', Y_prob)
-        print('loss:', loss)
+        logger.error('logits: {}', logits)
+        logger.error('Y_prob: {}', Y_prob)
+        logger.error('loss: {}', loss)
         raise RuntimeError('Found Nan number')
       
-      if (batch_idx + 1) % 20 == 0:
+      if (batch_idx + 1) % 20 == 0 and self.verbose:
         bag_size = data[0].shape[0] if isinstance(data, list) else data.shape[0]
-        print('batch {}'.format(batch_idx), end=',')
+        log_message = f'batch {batch_idx}'
         for k, v in outputs.items():
           if 'loss' in k:
-            print('{}:{:.4f}'.format(k, v.item()), end=',')
-        print(' label: {}, bag_size: {}'.format(label.item(), bag_size), flush=True)
-              
+            log_message += f', {k}:{v.item():.4f}'
+        log_message += f', label: {label.item()}, bag_size: {bag_size}'
+        logger.info(log_message)
+        
+      # Update progress bar
+      progress_bar.set_postfix({
+        'loss': f"{loss_value:.4f}"
+      })
               
       error = calculate_error(Y_hat, label)
       train_loss += loss_value
@@ -283,14 +300,14 @@ class TrainEngine:
     train_loss /= len(self.train_loader)
     train_error /= len(self.train_loader)
 
-    print('Epoch: {}, train_loss: {:.4f}, train_error: {:.4f}'.format(epoch, train_loss, train_error))
+    logger.info('Epoch: {}, train_loss: {:.4f}, train_error: {:.4f}', epoch, train_loss, train_error)
     if self.writer:
       self.writer.add_scalar('train/loss', train_loss, epoch)
       self.writer.add_scalar('train/error', train_error, epoch)
         
     for i in range(self.n_classes):
       acc, correct, count = acc_logger.get_summary(i)
-      print('class {}: acc {}, correct {}/{}'.format(i, acc, correct, count))
+      logger.info('class {}: acc {}, correct {}/{}', i, acc, correct, count)
       if self.writer:
         self.writer.add_scalar('train/class_{}_acc'.format(i), acc, epoch)
 
@@ -308,8 +325,17 @@ class TrainEngine:
     Y_hats = np.zeros(len(self.val_loader))    
     
     with torch.no_grad():
-      for batch_idx, batch in enumerate(self.val_loader):
-        print('Evaluating: [{}/{}]'.format(batch_idx + 1, len(self.val_loader)), flush=True)
+      progress_bar = tqdm(
+        self.val_loader, 
+        desc=f"Validating Epoch {epoch}", 
+        unit="batch",
+        disable=not self.verbose
+      )
+      
+      for batch_idx, batch in enumerate(progress_bar):
+        if self.verbose:
+          logger.info('Evaluating: [{}/{}]', batch_idx + 1, len(self.val_loader))
+          
         kwargs = {}
         data = batch['features']
         label = batch['label']
@@ -338,6 +364,12 @@ class TrainEngine:
         val_loss += loss.item()
         error = calculate_error(Y_hat, label)
         val_error += error
+        
+        # Update progress bar
+        progress_bar.set_postfix({
+          'loss': f"{loss.item():.4f}",
+          'error': f"{error:.4f}"
+        })
 
     val_error /= len(self.val_loader)
     val_loss /= len(self.val_loader)
@@ -353,16 +385,18 @@ class TrainEngine:
       self.writer.add_scalar('val/auc', auc, epoch)
       self.writer.add_scalar('val/error', val_error, epoch)
 
-    print('\nVal Set, val_loss: {:.4f}, val_error: {:.4f}, auc: {:.4f}, f1 score: {:.4f}'.format(val_loss, val_error, auc, f1))
+    logger.info('Val Set, val_loss: {:.4f}, val_error: {:.4f}, auc: {:.4f}, f1 score: {:.4f}', 
+                val_loss, val_error, auc, f1)
+    
     for i in range(self.n_classes):
       acc, correct, count = acc_logger.get_summary(i)
-      print('class {}: acc {}, correct {}/{}'.format(i, acc, correct, count))     
+      logger.info('class {}: acc {}, correct {}/{}', i, acc, correct, count)     
 
     # val_error is better than val_loss
     self.early_stopping(epoch, val_error, self.model, ckpt_name = os.path.join(self.result_dir, "s_{}_checkpoint.pt".format(self.fold)))
     
     if self.early_stopping.early_stop:
-      print("Early stopping")
+      logger.info("Early stopping")
       return True
     else:
       return False
@@ -385,8 +419,16 @@ class TrainEngine:
     # create lists to store all predictions and labels
     all_Y_hat = []
     all_label = []
+    
     with torch.no_grad():
-      for batch_idx, batch in enumerate(loader):
+      progress_bar = tqdm(
+        loader, 
+        desc="Evaluating", 
+        unit="batch",
+        disable=not self.verbose
+      )
+      
+      for batch_idx, batch in enumerate(progress_bar):
         data = batch['features']
         label = batch['label']
         
@@ -417,6 +459,11 @@ class TrainEngine:
         # Append current predictions and labels to the lists
         all_Y_hat.append(Y_hat.cpu().numpy())
         all_label.append(label.cpu().numpy())
+        
+        # Update progress bar
+        progress_bar.set_postfix({
+          'error': f"{error:.4f}"
+        })
 
     test_error /= len(loader)
 
@@ -445,20 +492,25 @@ class TrainEngine:
     results_dict = {'slide_id': slide_ids, 'Y': all_labels, 'Y_hat': all_preds}
     for c in range(self.n_classes):
       results_dict.update({'p_{}'.format(c): all_probs[:,c]})
-    print(results_dict)
+      
+    if self.verbose:
+      logger.info("Results: {}", results_dict)
+      
     df = pd.DataFrame(results_dict)
 
     return patient_results, test_error, auc, acc_logger, df, f1
 
   def eval_model(self, ckpt_path):
     if hasattr(self.model, 'load_model'):
-      if self.verbose: print('Using built-in API to load the ckpt...')
+      logger.info('Using built-in API to load the checkpoint...')
       self.model.load_model(ckpt_path)
     else:
       ckpt = torch.load(ckpt_path, map_location = 'cpu')
       msg = self.model.load_state_dict(ckpt)
-      print('loading results:', msg)
+      logger.info('Loading results: {}', msg)
         
     func = self.summary_subtyping
+    logger.info("Evaluating model...")
     patient_results, test_error, auc, _, df, f1 = func(self.test_loader)
+    logger.info("Evaluation complete - Error: {:.4f}, AUC: {:.4f}, F1: {:.4f}", test_error, auc, f1)
     return patient_results, test_error, auc, df, f1
