@@ -266,6 +266,8 @@ def segment_and_patch(
     df.loc[index, 'vis_level'] = current_vis_params['vis_level']
     df.loc[index, 'seg_level'] = current_seg_params['seg_level']
 
+    current_seg_params['ref_patch_size'] = patch_size
+
     seg_time_elapsed = 0
     if do_segmentation:
       try:
