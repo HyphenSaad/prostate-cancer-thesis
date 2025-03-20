@@ -29,7 +29,7 @@ CONFIG = {
   'skip_existing': True,
   'do_save_masks': False,
   'do_stitching': False,
-  'selective_slides': True,
+  'selective_slides': False,
   'selective_slides_csv': os.path.join(os.path.dirname(__file__), '..', 'data_splits', 'train_0.csv'),
   'directories': {
     'slides_directory': os.path.join(DATASET_BASE_DIRECTORY, DATASET_SLIDES_FOLDER_NAME),
@@ -191,8 +191,8 @@ def segment_and_patch(
   
   start_time = time.time()
 
+  process_list_autogen_path = os.path.join(save_base_directory, 'process_list_autogen.csv')
   for i in tqdm(range(total_slides), desc="Creating Patches", unit="slide"):
-    process_list_autogen_path = os.path.join(save_base_directory, 'process_list_autogen.csv')
     df.to_csv(process_list_autogen_path, index=False)
 
     index = process_stack.index[i]
@@ -357,8 +357,9 @@ def show_configs():
   logger.text(f"> Skip Existing: {CONFIG['skip_existing']}")
   logger.text(f"> Save Masks: {CONFIG['do_save_masks']}")
   logger.text(f"> Perform Stitching: {CONFIG['do_stitching']}")
-  logger.text(f"> Use Selective Slides: {CONFIG['selective_slides']}")
-  logger.text(f"> Selective Slides CSV: {CONFIG['selective_slides_csv']}")
+  if CONFIG['selective_slides']:
+    logger.text(f"> Use Selective Slides: {CONFIG['selective_slides']}")
+    logger.text(f"> Selective Slides CSV: {CONFIG['selective_slides_csv']}")
   logger.empty_line()
 
 def load_arguments():

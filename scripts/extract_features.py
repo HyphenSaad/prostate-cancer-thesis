@@ -322,7 +322,6 @@ def main():
 
   end_time = time.time()
   total_time = end_time - process_start_time
-  avg_features_per_slide = total_features / total_slides_processed if total_slides_processed > 0 else 0
   avg_time_per_slide = total_time / total_slides_processed if total_slides_processed > 0 else 0
 
   logger.empty_line()
