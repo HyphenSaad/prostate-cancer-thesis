@@ -41,7 +41,7 @@ CONFIG = {
     'extract_patches_directory': os.path.join(OUTPUT_BASE_DIRECTORY, 'extract_patches'),
     'features_pt_directory': os.path.join(OUTPUT_BASE_DIRECTORY, 'extract_features', 'pt_files'),
   },
-  'verbose': True,
+  'verbose': False,
 }
 
 def seed_torch(seed = 1):

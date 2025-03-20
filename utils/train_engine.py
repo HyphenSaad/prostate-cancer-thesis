@@ -14,8 +14,6 @@ from utils.common_utils import EarlyStopping, AccuracyLogger
 from utils.clam_utils import print_network, get_split_loader, calculate_error
 from utils.logger import Logger
 
-logger = Logger()
-
 def save_splits(
   dataset_splits,
   column_keys,
@@ -72,6 +70,7 @@ class TrainEngine:
     self.drop_out = drop_out    
     self.bag_loss = bag_loss
     self.verbose = verbose
+    self.logger = Logger()  # Initialize the logger
 
     self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -107,16 +106,16 @@ class TrainEngine:
       )
       
   def init_logger(self):
-    logger.empty_line()
-    logger.info("Training Fold {}!", self.fold)
+    self.logger.info('Training Fold {}!'.format(self.fold), timestamp=True)
     
     writer_dir = os.path.join(self.result_dir, str(self.fold))
     if not os.path.isdir(writer_dir): os.mkdir(writer_dir)
     self.writer = SummaryWriter(writer_dir, flush_secs = 15)
 
-    logger.info("Training on {} samples", len(self.train_split))
-    logger.info("Validating on {} samples", len(self.val_split))
-    logger.info("Testing on {} samples", len(self.test_split))
+    self.logger.info("Training on {} samples".format(len(self.train_split)))
+    self.logger.info("Validating on {} samples".format(len(self.val_split)))
+    self.logger.info("Testing on {} samples".format(len(self.test_split)))
+    self.logger.info(f"Using device: {self.device}")
 
   def get_learning_rate_scheduler(self):
     return None
@@ -132,15 +131,20 @@ class TrainEngine:
     if hasattr(model, 'relocate'): model.relocate()
     else: model = model.to(self.device)
 
-    print_network(model)
+    if self.verbose:
+      print_network(model)
+    else:
+      self.logger.info(f"Model: {self.mil_model_name} initialized")
     return model
 
   def get_loss_function(self):
     if hasattr(self.model, 'loss_function'):
-      if self.verbose: logger.info('The loss function defined in the MIL model is adopted...')
+      if self.verbose:
+        self.logger.info('The loss function defined in the MIL model is adopted...')
       loss_function = self.model.loss_function
     else:
-      if self.verbose: logger.info('Cross Entropy Loss is adopted as the loss function...')
+      if self.verbose:
+        self.logger.info('Cross Entropy Loss is adopted as the loss function...')
       loss_function = torch.nn.CrossEntropyLoss()
     return loss_function
 
@@ -160,6 +164,8 @@ class TrainEngine:
       )
     else:
       raise NotImplementedError(f'Optimizer {self.optimizer_name} not implemented!')
+    
+    self.logger.info(f"Using {self.optimizer_name} optimizer with lr={self.learning_rate}")
     return optimizer
 
   def init_data_loaders(self):
@@ -178,28 +184,36 @@ class TrainEngine:
     validate_func = self.validate_subtyping
     test_func = self.summary_subtyping
 
+    self.logger.info("Starting training process", timestamp=True)
     for epoch in range(self.max_epochs):
       train_loop_func(epoch)
       stop = validate_func(epoch)
-      if stop: break
+      if stop: 
+        self.logger.warning("Early stopping triggered", timestamp=True)
+        break
     
-    msg = self.model.load_state_dict(torch.load(os.path.join(self.result_dir, "s_{}_checkpoint.pt".format(fold))))
-    logger.info('Loading Trained Model...')
-    if self.verbose: logger.text(msg)
+    checkpoint_path = os.path.join(self.result_dir, "s_{}_checkpoint.pt".format(fold))
+    msg = self.model.load_state_dict(torch.load(checkpoint_path))
+    
+    self.logger.info('Loading best model checkpoint from: {}'.format(checkpoint_path), timestamp=True)
+    if self.verbose:
+      self.logger.debug(msg)
     
     # test_func on val loader
-    logger.info("Evaluating on validation set...")
+    self.logger.info("Evaluating on validation set...", timestamp=True)
     _, val_error, val_auc, _, _, val_f1 = test_func(self.val_loader)
+    
     # test on test loader
-    logger.info("Evaluating on test set...")
+    self.logger.info("Evaluating on test set...", timestamp=True)
     results_dict, test_error, test_auc, acc_logger, _, test_f1 = test_func(self.test_loader)
     
-    logger.info('Test Error: {:.4f}, ROC AUC: {:.4f}, F1 Score: {:.4f}', test_error, test_auc, test_f1)
-    logger.info('Val Error: {:.4f}, ROC AUC: {:.4f}, F1 Score: {:.4f}', val_error, val_auc, val_f1)
+    self.logger.success("Final Results:", timestamp=True)
+    self.logger.success("Test Error: {:.4f}, ROC AUC: {:.4f}, F1 Score: {:.4f}".format(test_error, test_auc, test_f1))
+    self.logger.success("Val Error: {:.4f}, ROC AUC: {:.4f}, F1 Score: {:.4f}".format(val_error, val_auc, val_f1))
 
     for i in range(self.n_classes):
       acc, correct, count = acc_logger.get_summary(i)
-      logger.info('class {}: acc {}, correct {}/{}', i, acc, correct, count)
+      self.logger.info('Class {}: Accuracy {:.4f}, Correct {}/{}'.format(i, acc, correct, count))
       self.writer.add_scalar('final/test_class_{}_acc'.format(i), acc, 0)
 
     self.writer.add_scalar('final/val_error', val_error, 0)
@@ -216,14 +230,14 @@ class TrainEngine:
     train_loss = 0.0
     train_error = 0.0
 
-    logger.empty_line()
-    logger.info('Epoch: {}', epoch)
+    self.logger.empty_line()
+    self.logger.info('Epoch: {}/{}'.format(epoch+1, self.max_epochs), timestamp=True)
     
     progress_bar = tqdm(
-      self.train_loader,
-      desc=f"Training Epoch {epoch}",
-      unit="batch",
-      disable=not self.verbose
+        self.train_loader, 
+        desc=f"Training Epoch {epoch+1}/{self.max_epochs}",
+        disable=False, 
+        ncols=100
     )
     
     for batch_idx, batch in enumerate(progress_bar):
@@ -273,24 +287,27 @@ class TrainEngine:
 
       loss_value = loss.item()
       if torch.isnan(loss):
-        logger.error('logits: {}', logits)
-        logger.error('Y_prob: {}', Y_prob)
-        logger.error('loss: {}', loss)
+        self.logger.error('NaN loss detected!')
+        if self.verbose:
+          self.logger.debug('logits: {}'.format(logits))
+          self.logger.debug('Y_prob: {}'.format(Y_prob))
+          self.logger.debug('loss: {}'.format(loss))
         raise RuntimeError('Found Nan number')
+      
+      # Update progress bar
+      progress_bar.set_postfix({
+          'loss': f'{loss_value:.4f}',
+          'error': f'{calculate_error(Y_hat, label):.4f}'
+      })
       
       if (batch_idx + 1) % 20 == 0 and self.verbose:
         bag_size = data[0].shape[0] if isinstance(data, list) else data.shape[0]
-        log_message = f'batch {batch_idx}'
+        log_message = f'Batch {batch_idx+1}/{len(self.train_loader)}'
         for k, v in outputs.items():
           if 'loss' in k:
-            log_message += f', {k}:{v.item():.4f}'
+            log_message += f', {k}: {v.item():.4f}'
         log_message += f', label: {label.item()}, bag_size: {bag_size}'
-        logger.info(log_message)
-        
-      # Update progress bar
-      progress_bar.set_postfix({
-        'loss': f"{loss_value:.4f}"
-      })
+        self.logger.debug(log_message)
               
       error = calculate_error(Y_hat, label)
       train_loss += loss_value
@@ -300,16 +317,19 @@ class TrainEngine:
     train_loss /= len(self.train_loader)
     train_error /= len(self.train_loader)
 
-    logger.info('Epoch: {}, train_loss: {:.4f}, train_error: {:.4f}', epoch, train_loss, train_error)
+    self.logger.success('Epoch: {}/{}, Train Loss: {:.4f}, Train Error: {:.4f}'.format(
+        epoch+1, self.max_epochs, train_loss, train_error))
+    
     if self.writer:
       self.writer.add_scalar('train/loss', train_loss, epoch)
       self.writer.add_scalar('train/error', train_error, epoch)
         
-    for i in range(self.n_classes):
-      acc, correct, count = acc_logger.get_summary(i)
-      logger.info('class {}: acc {}, correct {}/{}', i, acc, correct, count)
-      if self.writer:
-        self.writer.add_scalar('train/class_{}_acc'.format(i), acc, epoch)
+    if self.verbose:
+      for i in range(self.n_classes):
+        acc, correct, count = acc_logger.get_summary(i)
+        self.logger.info('Class {}: Accuracy {:.4f}, Correct {}/{}'.format(i, acc, correct, count))
+        if self.writer:
+          self.writer.add_scalar('train/class_{}_acc'.format(i), acc, epoch)
 
     if self.call_scheduler is not None:
       self.call_scheduler()
@@ -324,18 +344,17 @@ class TrainEngine:
     labels = np.zeros(len(self.val_loader))    
     Y_hats = np.zeros(len(self.val_loader))    
     
-    with torch.no_grad():
-      progress_bar = tqdm(
+    self.logger.info("Validating epoch {}/{}".format(epoch+1, self.max_epochs), timestamp=True)
+    
+    progress_bar = tqdm(
         self.val_loader, 
-        desc=f"Validating Epoch {epoch}", 
-        unit="batch",
-        disable=not self.verbose
-      )
-      
+        desc=f"Validating Epoch {epoch+1}/{self.max_epochs}", 
+        disable=False,
+        ncols=100
+    )
+    
+    with torch.no_grad():
       for batch_idx, batch in enumerate(progress_bar):
-        if self.verbose:
-          logger.info('Evaluating: [{}/{}]', batch_idx + 1, len(self.val_loader))
-          
         kwargs = {}
         data = batch['features']
         label = batch['label']
@@ -361,15 +380,17 @@ class TrainEngine:
         labels[batch_idx] = label.item()
         Y_hats[batch_idx] = Y_hat.item()
         
-        val_loss += loss.item()
+        loss_value = loss.item()
         error = calculate_error(Y_hat, label)
-        val_error += error
         
         # Update progress bar
         progress_bar.set_postfix({
-          'loss': f"{loss.item():.4f}",
-          'error': f"{error:.4f}"
+            'loss': f'{loss_value:.4f}',
+            'error': f'{error:.4f}'
         })
+        
+        val_loss += loss_value
+        val_error += error
 
     val_error /= len(self.val_loader)
     val_loss /= len(self.val_loader)
@@ -385,18 +406,19 @@ class TrainEngine:
       self.writer.add_scalar('val/auc', auc, epoch)
       self.writer.add_scalar('val/error', val_error, epoch)
 
-    logger.info('Val Set, val_loss: {:.4f}, val_error: {:.4f}, auc: {:.4f}, f1 score: {:.4f}', 
-                val_loss, val_error, auc, f1)
+    self.logger.success('Validation Results - Epoch: {}/{}, Loss: {:.4f}, Error: {:.4f}, AUC: {:.4f}, F1: {:.4f}'.format(
+        epoch+1, self.max_epochs, val_loss, val_error, auc, f1))
     
-    for i in range(self.n_classes):
-      acc, correct, count = acc_logger.get_summary(i)
-      logger.info('class {}: acc {}, correct {}/{}', i, acc, correct, count)     
+    if self.verbose:
+      for i in range(self.n_classes):
+        acc, correct, count = acc_logger.get_summary(i)
+        self.logger.info('Class {}: Accuracy {:.4f}, Correct {}/{}'.format(i, acc, correct, count))     
 
     # val_error is better than val_loss
     self.early_stopping(epoch, val_error, self.model, ckpt_name = os.path.join(self.result_dir, "s_{}_checkpoint.pt".format(self.fold)))
     
     if self.early_stopping.early_stop:
-      logger.info("Early stopping")
+      self.logger.warning("Early stopping triggered at epoch {}/{}".format(epoch+1, self.max_epochs))
       return True
     else:
       return False
@@ -420,14 +442,16 @@ class TrainEngine:
     all_Y_hat = []
     all_label = []
     
-    with torch.no_grad():
-      progress_bar = tqdm(
+    self.logger.info("Running evaluation...", timestamp=True)
+    
+    progress_bar = tqdm(
         loader, 
         desc="Evaluating", 
-        unit="batch",
-        disable=not self.verbose
-      )
-      
+        disable=False,
+        ncols=100
+    )
+    
+    with torch.no_grad():
       for batch_idx, batch in enumerate(progress_bar):
         data = batch['features']
         label = batch['label']
@@ -456,14 +480,14 @@ class TrainEngine:
         error = calculate_error(Y_hat, label)
         test_error += error
         
+        # Update progress bar
+        progress_bar.set_postfix({
+            'error': f'{error:.4f}'
+        })
+        
         # Append current predictions and labels to the lists
         all_Y_hat.append(Y_hat.cpu().numpy())
         all_label.append(label.cpu().numpy())
-        
-        # Update progress bar
-        progress_bar.set_postfix({
-          'error': f"{error:.4f}"
-        })
 
     test_error /= len(loader)
 
@@ -489,28 +513,39 @@ class TrainEngine:
     # calculate the F1 score
     f1 = f1_score(all_label, all_Y_hat, average='macro')
 
+    self.logger.success(f"Evaluation Results - Error: {test_error:.4f}, AUC: {auc:.4f}, F1: {f1:.4f}", timestamp=True)
+    
+    if self.verbose:
+      for i in range(self.n_classes):
+        acc, correct, count = acc_logger.get_summary(i)
+        self.logger.info('Class {}: Accuracy {:.4f}, Correct {}/{}'.format(i, acc, correct, count))
+
     results_dict = {'slide_id': slide_ids, 'Y': all_labels, 'Y_hat': all_preds}
     for c in range(self.n_classes):
       results_dict.update({'p_{}'.format(c): all_probs[:,c]})
-      
+    
     if self.verbose:
-      logger.info("Results: {}", results_dict)
-      
+      self.logger.debug("Results dictionary created")
+    
     df = pd.DataFrame(results_dict)
 
     return patient_results, test_error, auc, acc_logger, df, f1
 
   def eval_model(self, ckpt_path):
+    self.logger.info(f"Loading model checkpoint from: {ckpt_path}", timestamp=True)
+    
     if hasattr(self.model, 'load_model'):
-      logger.info('Using built-in API to load the checkpoint...')
+      if self.verbose: 
+        self.logger.info('Using built-in API to load the checkpoint...')
       self.model.load_model(ckpt_path)
     else:
       ckpt = torch.load(ckpt_path, map_location = 'cpu')
       msg = self.model.load_state_dict(ckpt)
-      logger.info('Loading results: {}', msg)
+      self.logger.info('Loading results: {}'.format(msg))
         
+    self.logger.info("Running evaluation on test data...", timestamp=True)
     func = self.summary_subtyping
-    logger.info("Evaluating model...")
-    patient_results, test_error, auc, _, df, f1 = func(self.test_loader)
-    logger.info("Evaluation complete - Error: {:.4f}, AUC: {:.4f}, F1: {:.4f}", test_error, auc, f1)
+    patient_results, test_error, auc, df, f1 = func(self.test_loader)
+    
+    self.logger.success(f"Evaluation complete - Error: {test_error:.4f}, AUC: {auc:.4f}, F1: {f1:.4f}", timestamp=True)
     return patient_results, test_error, auc, df, f1
