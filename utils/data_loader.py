@@ -12,19 +12,12 @@ from utils.clam_utils import generate_split, nth
 
 class GenericWSIClassificationDataset(Dataset):
     def __init__(self,
-      csv_path = None,
-      label_column = None,
+      csv_path,
+      label_column,
       label_dict = {},
       patient_voting = 'max',
       verbose = False,
-      extract_patches_dir = None,
-      patches_dir = None,
-      features_pt_directory = None
     ):
-      self.extract_patches_dir = extract_patches_dir
-      self.patches_dir = patches_dir
-      self.features_pt_directory = features_pt_directory
-      
       self.label_dict = label_dict
       self.num_classes = len(set(self.label_dict.values()))
       self.verbose = verbose
@@ -129,7 +122,7 @@ class GenericWSIClassificationDataset(Dataset):
       if len(split) > 0:
         mask = self.slide_data['slide_id'].isin(split.tolist())
         df_slice = self.slide_data[mask].reset_index(drop = True)
-        split = GenericSplit(df_slice, num_classes = self.num_classes, extract_patches_dir = self.extract_patches_dir, patches_dir = self.patches_dir, features_pt_directory = self.features_pt_directory)
+        split = GenericSplit(df_slice, num_classes = self.num_classes)
         split.set_backbone(backbone)
         split.set_patch_size(patch_size)
       else: split = None
@@ -146,7 +139,7 @@ class GenericWSIClassificationDataset(Dataset):
       if len(split) > 0:
         mask = self.slide_data['slide_id'].isin(merged_split)
         df_slice = self.slide_data[mask].reset_index(drop = True)
-        split = GenericSplit(df_slice, num_classes = self.num_classes, extract_patches_dir = self.extract_patches_dir, patches_dir = self.patches_dir, features_pt_directory = self.features_pt_directory)
+        split = GenericSplit(df_slice, num_classes = self.num_classes)
       else: split = None
       
       return split
@@ -155,21 +148,21 @@ class GenericWSIClassificationDataset(Dataset):
       if from_id:
         if len(self.train_ids) > 0:
           train_data = self.slide_data.loc[self.train_ids].reset_index(drop = True)
-          train_split = GenericSplit(train_data, num_classes = self.num_classes, extract_patches_dir = self.extract_patches_dir, patches_dir = self.patches_dir, features_pt_directory = self.features_pt_directory)
+          train_split = GenericSplit(train_data, num_classes = self.num_classes)
           train_split.set_backbone(backbone)
           train_split.set_patch_size(patch_size)
         else: train_split = None
         
         if len(self.val_ids) > 0:
           val_data = self.slide_data.loc[self.val_ids].reset_index(drop = True)
-          val_split = GenericSplit(val_data, num_classes = self.num_classes, extract_patches_dir = self.extract_patches_dir, patches_dir = self.patches_dir, features_pt_directory = self.features_pt_directory)
+          val_split = GenericSplit(val_data, num_classes = self.num_classes)
           val_split.set_backbone(backbone)
           val_split.set_patch_size(patch_size)
         else: val_split = None
         
         if len(self.test_ids) > 0:
           test_data = self.slide_data.loc[self.test_ids].reset_index(drop = True)
-          test_split = GenericSplit(test_data, num_classes = self.num_classes, extract_patches_dir = self.extract_patches_dir, patches_dir = self.patches_dir, features_pt_directory = self.features_pt_directory)
+          test_split = GenericSplit(test_data, num_classes = self.num_classes)
           test_split.set_backbone(backbone)
           test_split.set_patch_size(patch_size)
         else: test_split = None
@@ -251,17 +244,12 @@ class GenericWSIClassificationDataset(Dataset):
 class GenericMILDataset(GenericWSIClassificationDataset):
   def __init__(
     self,
-    extract_patches_dir, 
-    patches_dir,
-    features_pt_directory,
+    extract_patches_dir = None, 
+    patches_dir = None,
+    features_pt_directory = None,
     **kwargs
   ):
-    super(GenericMILDataset, self).__init__(
-      extract_patches_dir = extract_patches_dir,
-      patches_dir = patches_dir,
-      features_pt_directory = features_pt_directory,
-      **kwargs,
-    )
+    super(GenericMILDataset, self).__init__(**kwargs)
 
     self.extract_patches_dir = extract_patches_dir
     self.patches_dir = patches_dir
@@ -270,7 +258,14 @@ class GenericMILDataset(GenericWSIClassificationDataset):
   def __getitem__(self, index):
     slide_id = self.slide_data['slide_id'][index]
     label = self.slide_data['label'][index]
-    
+
+    if self.extract_patches_dir is None:
+      self.extract_patches_dir = "/kaggle/working/output/extract_patches"
+    if self.patches_dir is None:
+      self.patches_dir = "/kaggle/working/output/create_patches/patches"
+    if self.features_pt_directory is None:
+      self.features_pt_directory = "/kaggle/working/output/extract_features/pt_files"
+      
     img_root = os.path.join(self.extract_patches_dir, slide_id)
     coords_path = os.path.join(self.patches_dir, '{}.h5'.format(slide_id))
 
@@ -310,13 +305,7 @@ class GenericMILDataset(GenericWSIClassificationDataset):
     self.patch_size = size
 
 class GenericSplit(GenericMILDataset):
-    def __init__(self, slide_data, num_classes = 2, extract_patches_dir = None, patches_dir = None, features_pt_directory = None):
-      super(GenericSplit, self).__init__(
-        extract_patches_dir = extract_patches_dir,
-        patches_dir = patches_dir,
-        features_pt_directory = features_pt_directory,
-      )
-      
+    def __init__(self, slide_data, num_classes = 2):
       self.use_h5 = False
       self.slide_data = slide_data
       self.num_classes = num_classes
