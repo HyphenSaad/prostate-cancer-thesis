@@ -306,6 +306,8 @@ class GenericMILDataset(GenericWSIClassificationDataset):
 
 class GenericSplit(GenericMILDataset):
     def __init__(self, slide_data, num_classes = 2):
+      super(GenericSplit, self).__init__()
+      
       self.use_h5 = False
       self.slide_data = slide_data
       self.num_classes = num_classes
