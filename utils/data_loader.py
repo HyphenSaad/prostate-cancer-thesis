@@ -259,7 +259,7 @@ class GenericMILDataset(GenericWSIClassificationDataset):
     super(GenericMILDataset, self).__init__(
       extract_patches_dir = extract_patches_dir,
       patches_dir = patches_dir,
-      features_pt_directory = features_pt_directory
+      features_pt_directory = features_pt_directory,
       **kwargs,
     )
 
