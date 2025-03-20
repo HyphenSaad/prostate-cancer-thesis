@@ -19,7 +19,9 @@ CONFIG = {
   'dataset_info_csv': os.path.join(DATASET_BASE_DIRECTORY, DATASET_INFO_FILE_NAME),
   'directories': {
     'save_base_directory': os.path.join(OUTPUT_BASE_DIRECTORY, 'create_splits'),
-    'patches_directory': os.path.join(OUTPUT_BASE_DIRECTORY, 'create_patches', 'patches'),
+    'create_patches_directory': os.path.join(OUTPUT_BASE_DIRECTORY, 'create_patches', 'patches'),
+    'extract_patches_directory': os.path.join(OUTPUT_BASE_DIRECTORY, 'extract_patches'),
+    'features_pt_directory': os.path.join(OUTPUT_BASE_DIRECTORY, 'extract_features', 'pt_files'),
   },
   'verbose': False,
 }
@@ -50,19 +52,26 @@ def main():
   create_directories(CONFIG['directories'])
 
   dataset = GenericMILDataset(
+    patches_dir = CONFIG['directories']['create_patches_directory'],
+    extract_patches_dir = CONFIG['directories']['extract_patches_directory'],
+    features_pt_directory = CONFIG['directories']['features_pt_directory'],
     csv_path = CONFIG['dataset_info_csv'],
-    patches_dir = CONFIG['directories']['patches_directory'],
     label_column = 'isup_grade',
     label_dict = { '0': 0, '1': 1, '2': 2, '3': 3, '4': 4, '5': 5 },
-    verbose = CONFIG['verbose']
+    verbose = CONFIG['verbose'],
   )
 
   num_slides_cls = np.array([len(cls_ids) for cls_ids in dataset.patient_cls_ids])
   dataset.create_splits(
     k = CONFIG['k_fold'],
-    val_num = np.round(num_slides_cls).astype(int),
-    test_num = np.round(num_slides_cls).astype(int)
+    val_num = np.round(num_slides_cls * CONFIG['validation_fraction']).astype(int),
+    test_num = np.round(num_slides_cls * CONFIG['test_fraction']).astype(int)
   )
+  
+  # print(dataset.patient_cls_ids)
+  # print(np.round(num_slides_cls * CONFIG['validation_fraction']).astype(int))
+  # print(np.round(num_slides_cls * CONFIG['test_fraction']).astype(int))
+  # return
 
   for k in range(CONFIG['k_fold']):
     dataset.set_splits()

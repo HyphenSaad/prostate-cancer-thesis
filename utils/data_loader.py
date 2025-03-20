@@ -14,7 +14,6 @@ class GenericWSIClassificationDataset(Dataset):
     def __init__(self,
       csv_path,
       label_column,
-      patches_dir,
       label_dict = {},
       patient_voting = 'max',
       verbose = False,
@@ -31,7 +30,6 @@ class GenericWSIClassificationDataset(Dataset):
       slide_data.rename(columns={'image_id': 'slide_id'}, inplace=True)
 
       slide_data['case_id'] = slide_data['slide_id']
-      slide_data['dir'] = patches_dir
       
       slide_data = self.dataframe_preparation(slide_data, self.label_dict, self.label_column)
       self.slide_data = slide_data
@@ -124,7 +122,7 @@ class GenericWSIClassificationDataset(Dataset):
       if len(split) > 0:
         mask = self.slide_data['slide_id'].isin(split.tolist())
         df_slice = self.slide_data[mask].reset_index(drop = True)
-        split = Generic_Split(df_slice, data_dir = self.data_dir, num_classes = self.num_classes)
+        split = GenericSplit(df_slice, num_classes = self.num_classes)
         split.set_backbone(backbone)
         split.set_patch_size(patch_size)
       else: split = None
@@ -141,7 +139,7 @@ class GenericWSIClassificationDataset(Dataset):
       if len(split) > 0:
         mask = self.slide_data['slide_id'].isin(merged_split)
         df_slice = self.slide_data[mask].reset_index(drop = True)
-        split = Generic_Split(df_slice, data_dir = self.data_dir, num_classes = self.num_classes)
+        split = GenericSplit(df_slice, num_classes = self.num_classes)
       else: split = None
       
       return split
@@ -149,21 +147,21 @@ class GenericWSIClassificationDataset(Dataset):
     def return_splits(self, backbone = None, patch_size = ''):
       if len(self.train_ids) > 0:
         train_data = self.slide_data.loc[self.train_ids].reset_index(drop = True)
-        train_split = Generic_Split(train_data, data_dir = self.data_dir, num_classes = self.num_classes)
+        train_split = GenericSplit(train_data, num_classes = self.num_classes)
         train_split.set_backbone(backbone)
         train_split.set_patch_size(patch_size)
       else: train_split = None
       
       if len(self.val_ids) > 0:
         val_data = self.slide_data.loc[self.val_ids].reset_index(drop = True)
-        val_split = Generic_Split(val_data, data_dir = self.data_dir, num_classes = self.num_classes)
+        val_split = GenericSplit(val_data, num_classes = self.num_classes)
         val_split.set_backbone(backbone)
         val_split.set_patch_size(patch_size)
       else: val_split = None
       
       if len(self.test_ids) > 0:
         test_data = self.slide_data.loc[self.test_ids].reset_index(drop = True)
-        test_split = Generic_Split(test_data, data_dir = self.data_dir, num_classes = self.num_classes)
+        test_split = GenericSplit(test_data, num_classes = self.num_classes)
         test_split.set_backbone(backbone)
         test_split.set_patch_size(patch_size)
       else: test_split = None
@@ -237,16 +235,25 @@ class GenericWSIClassificationDataset(Dataset):
 
 
 class GenericMILDataset(GenericWSIClassificationDataset):
-  def __init__(self, **kwargs):
+  def __init__(
+    self,
+    extract_patches_dir, 
+    patches_dir,
+    features_pt_directory,
+    **kwargs
+  ):
     super(GenericMILDataset, self).__init__(**kwargs)
+
+    self.extract_patches_dir = extract_patches_dir
+    self.patches_dir = patches_dir
+    self.features_pt_directory = features_pt_directory
 
   def __getitem__(self, index):
     slide_id = self.slide_data['slide_id'][index]
     label = self.slide_data['label'][index]
     
-    data_dir = self.slide_data['dir'][index]
-    img_root = os.path.join(data_dir, 'images', slide_id)
-    coords_path = os.path.join(data_dir, 'patches', '{}.h5'.format(slide_id))
+    img_root = os.path.join(self.extract_patches_dir, slide_id)
+    coords_path = os.path.join(self.patches_dir, '{}.h5'.format(slide_id))
 
     try:
       with h5py.File(coords_path, 'r') as f:
@@ -263,7 +270,7 @@ class GenericMILDataset(GenericWSIClassificationDataset):
         img_list.append(img)
       return img_list
     
-    full_path = os.path.join(data_dir, 'pt_files', self.backbone, '{}.pt'.format(slide_id))
+    full_path = os.path.join(self.features_pt_directory, self.backbone, '{}.pt'.format(slide_id))
     try:
       features = torch.load(full_path)
     except:
@@ -283,8 +290,8 @@ class GenericMILDataset(GenericWSIClassificationDataset):
   def set_patch_size(self, size):
     self.patch_size = size
 
-class Generic_Split(GenericMILDataset):
-    def __init__(self, slide_data, num_classes=2):
+class GenericSplit(GenericMILDataset):
+    def __init__(self, slide_data, num_classes = 2):
       self.use_h5 = False
       self.slide_data = slide_data
       self.num_classes = num_classes
