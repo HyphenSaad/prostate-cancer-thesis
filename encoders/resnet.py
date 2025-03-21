@@ -104,7 +104,7 @@ class ResNetBaseline(nn.Module):
     self.layer1 = self._make_layer(block, 64, layers[0])
     self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
     self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
-    self.layer4 = self._make_layer(block, 512, layers[3], stride=2) # FIX: UPDATED_OTHER_THAN_GPFM_TOOLKIT_CODE
+    # self.layer4 = self._make_layer(block, 512, layers[3], stride=2) # FIX: UPDATED_OTHER_THAN_GPFM_TOOLKIT_CODE
     self.avgpool = nn.AdaptiveAvgPool2d(1) 
 
     for m in self.modules():
@@ -139,7 +139,7 @@ class ResNetBaseline(nn.Module):
     x = self.layer1(x)
     x = self.layer2(x)
     x = self.layer3(x)
-    x = self.layer4(x) # FIX: UPDATED_OTHER_THAN_GPFM_TOOLKIT_CODE
+    # x = self.layer4(x) # FIX: UPDATED_OTHER_THAN_GPFM_TOOLKIT_CODE
 
     x = self.avgpool(x)
     x = x.view(x.size(0), -1)
