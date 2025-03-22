@@ -247,64 +247,12 @@ def main():
   )
 
   logger.info(f"Evaluating model from checkpoint: {CONFIG['checkpoint_path']}")
-  patient_results, test_error, test_auc, acc_logger, df, test_f1, test_metrics = train_engine.eval_model(CONFIG['checkpoint_path'])
+  _, test_error, test_auc, acc_logger, df, test_f1, test_metrics = train_engine.eval_model(CONFIG['checkpoint_path'])
   
   if CONFIG['save_predictions']:
     predictions_path = os.path.join(model_output_dir, "predictions.csv")
     logger.info(f"Saving predictions to {predictions_path}")
     df.to_csv(predictions_path, index=False)
-  
-  # Save attention maps if requested and available
-  if CONFIG['save_attention_maps']:
-    attention_dir = os.path.join(model_output_dir, "attention_maps")
-    os.makedirs(attention_dir, exist_ok=True)
-    logger.info(f"Saving attention maps to {attention_dir}")
-    
-    attention_saved = False
-    import torch
-    import numpy as np
-    
-    for slide_id, result in patient_results.items():
-      if 'attention' in result:
-        attention = result['attention']
-        attention_path = os.path.join(attention_dir, f"{slide_id}_attention.npz")
-        
-        # Convert to numpy if it's a torch tensor
-        if isinstance(attention, torch.Tensor):
-          attention = attention.cpu().numpy()
-        
-        # Save the raw attention data as numpy array
-        np.savez_compressed(attention_path, attention=attention)
-        
-        # Also save a visualization
-        plt.figure(figsize=(10, 8))
-        if attention.ndim == 2:
-          # For 2D attention maps
-          plt.imshow(attention, cmap='hot', interpolation='nearest')
-          plt.colorbar(label='Attention Weight')
-        elif attention.ndim == 1:
-          # For 1D attention vectors
-          plt.bar(range(len(attention)), attention)
-          plt.xlabel('Patch Index')
-        elif attention.ndim > 2:
-          # For higher dimensional attention tensors, flatten to 2D
-          # Taking the mean across heads if multi-head attention
-          if attention.ndim == 3:
-            attention = attention.mean(axis=0)  # Average across heads
-          attention = attention.reshape(attention.shape[0], -1)
-          plt.imshow(attention, cmap='hot', interpolation='nearest')
-          plt.colorbar(label='Attention Weight')
-        
-        plt.title(f'Attention Map for {slide_id}')
-        plt.tight_layout()
-        plt.savefig(os.path.join(attention_dir, f"{slide_id}_attention.png"))
-        plt.close()
-        
-        attention_saved = True
-    
-    if not attention_saved:
-      logger.warning("No attention maps found in model output. The model may not support attention visualization.")
-      logger.warning("Make sure you're using a model like TransMIL that exposes attention weights.")
   
   metrics_path = os.path.join(model_output_dir, "metrics.json")
   metrics_to_save = {
