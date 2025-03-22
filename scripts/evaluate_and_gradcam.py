@@ -7,6 +7,7 @@ import torch
 import argparse
 import numpy as np
 import matplotlib.pyplot as plt
+import cv2  # Add the missing OpenCV import
 from PIL import Image
 import pandas as pd
 from datetime import datetime
