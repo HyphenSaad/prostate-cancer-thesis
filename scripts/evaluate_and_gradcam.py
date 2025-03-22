@@ -11,6 +11,7 @@ import cv2  # Add the missing OpenCV import
 from PIL import Image
 import pandas as pd
 from datetime import datetime
+from scipy.ndimage import gaussian_filter
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
@@ -302,7 +303,7 @@ def create_attention_heatmap(
         # Ensure coords and scores have compatible lengths
         if len(coords) != len(attention_scores):
             logger.warning(f"Mismatch between coords ({len(coords)}) and attention scores ({len(attention_scores)})")
-            # Use the minimum length to avoid errors
+            # Already handled in predict_slide, but double-check
             min_len = min(len(coords), len(attention_scores))
             coords = coords[:min_len]
             attention_scores = attention_scores[:min_len]
@@ -319,32 +320,16 @@ def create_attention_heatmap(
         if coords.ndim == 1:
             coords = coords.reshape(-1, 2)
         
-        # Normalize attention scores to 0-100 range
-        norm_scores = (attention_scores - attention_scores.min()) / (attention_scores.max() - attention_scores.min() + 1e-8) * 100
+        # Normalize attention scores to 0-100 range for visualization
+        norm_scores = (attention_scores - attention_scores.min()) / (attention_scores.max() - attention_scores.min() + 1e-8)
         
         # Log information for debugging
         logger.info(f"Coords shape: {coords.shape}")
-        logger.info(f"Attention scores shape: {norm_scores.shape}")
+        logger.info(f"Attention scores shape: {np.array(norm_scores).shape}")
         logger.info(f"Creating heatmap with {len(coords)} points")
         
-        # Get segmentation parameters from CREATE_PATCHES_PRESET
-        seg_params = {
-            'seg_level': int(CREATE_PATCHES_PRESET['seg_level']),
-            'sthresh': int(CREATE_PATCHES_PRESET['sthresh']),
-            'mthresh': int(CREATE_PATCHES_PRESET['mthresh']),
-            'close': int(CREATE_PATCHES_PRESET['close']),
-            'use_otsu': bool(CREATE_PATCHES_PRESET['use_otsu']),
-            'keep_ids': CREATE_PATCHES_PRESET['keep_ids'],
-            'exclude_ids': CREATE_PATCHES_PRESET['exclude_ids'],
-        }
-        
-        filter_params = {
-            'a_t': int(CREATE_PATCHES_PRESET['a_t']),
-            'a_h': int(CREATE_PATCHES_PRESET['a_h']),
-            'max_n_holes': int(CREATE_PATCHES_PRESET['max_n_holes']),
-        }
-        
-        logger.info(f"Using segmentation parameters from configs: {seg_params}")
+        # Skip tissue segmentation since it's causing warnings and we want a smooth heatmap overlay
+        # directly on the WSI image, regardless of tissue boundaries
         
         # Determine the best visualization level for the whole slide
         vis_level = -1
@@ -359,21 +344,9 @@ def create_attention_heatmap(
         # Determine the dimensions of the slide at the visualization level
         region_size = wsi_object.level_dim[vis_level]
         
-        # Read the WSI image at the visualization level as background (always)
+        # Read the WSI image at the visualization level as background
         logger.info("Reading the whole slide image for background...")
-        img = np.array(wsi_object.wsi.read_region((0,0), vis_level, region_size).convert("RGB"))
-        
-        # Try segmentation but don't let it affect our background image
-        segmentation_success = False
-        try:
-            logger.info("Attempting tissue segmentation...")
-            wsi_object.segment_tissue(**seg_params, filter_params=filter_params)
-            segmentation_success = True
-            logger.info("Tissue segmentation completed successfully")
-        except Exception as seg_error:
-            logger.warning(f"Tissue segmentation failed: {seg_error}. Will continue without tissue mask.")
-            wsi_object.contours_tissue = None
-            wsi_object.holes_tissue = None
+        wsi_img = np.array(wsi_object.wsi.read_region((0,0), vis_level, region_size).convert("RGB"))
         
         # Scale coordinates to the visualization level
         downsample = wsi_object.level_downsamples[vis_level]
@@ -384,13 +357,11 @@ def create_attention_heatmap(
         # Scale patch size to the visualization level
         scaled_patch_size = int(patch_size * scale[0])
         
-        logger.info(f"Processing individual patches and applying heatmap...")
+        # Create a heatmap mask of the same size as the WSI
+        heatmap_mask = np.zeros((region_size[1], region_size[0]), dtype=np.float32)
         
-        # Create overlay for each patch
+        # Place attention scores in the heatmap mask
         for i, (coord, score) in enumerate(zip(scaled_coords, norm_scores)):
-            if i % 100 == 0 and i > 0:
-                logger.info(f"Processed {i}/{len(scaled_coords)} patches")
-                
             # Get the patch coordinates
             x, y = coord
             
@@ -400,66 +371,98 @@ def create_attention_heatmap(
                 y + scaled_patch_size > region_size[1]):
                 continue
             
-            # Normalize score to 0-1 for coloring
-            norm_score = score / 100.0
-            
-            # Skip patches below threshold if binarization is on
-            if threshold > 0 and norm_score < threshold:
+            # Skip patches below threshold if thresholding is enabled
+            if threshold > 0 and score < threshold:
                 continue
             
-            # Get color for this attention score
-            color = np.array(cmap_func(norm_score)[:3]) * 255
+            # Fill the patch area in the heatmap mask with the attention score
+            # Use a gradient falloff from center for smoother appearance
+            center_x = x + scaled_patch_size // 2
+            center_y = y + scaled_patch_size // 2
             
-            # Create overlay for this patch
-            overlay = np.ones((scaled_patch_size, scaled_patch_size, 3), dtype=np.uint8) * color.astype(np.uint8)
+            # Create a gradient circle centered at the patch center
+            y_indices, x_indices = np.ogrid[:region_size[1], :region_size[0]]
+            dist_from_center = np.sqrt((x_indices - center_x)**2 + (y_indices - center_y)**2)
             
-            # Apply the overlay using alpha blending
-            img[y:y+scaled_patch_size, x:x+scaled_patch_size] = cv2.addWeighted(
-                img[y:y+scaled_patch_size, x:x+scaled_patch_size],
-                1 - alpha,
-                overlay,
-                alpha,
-                0
-            )
+            # Normalize distance by patch size and apply falloff
+            norm_dist = dist_from_center / (scaled_patch_size / 2)
+            mask = np.exp(-norm_dist**2)
+            
+            # Threshold to limit the effect radius to approximately the patch size
+            mask[norm_dist > 1.5] = 0
+            
+            # Multiply by attention score and add to heatmap mask
+            heatmap_mask = np.maximum(heatmap_mask, mask * score)
+        
+        # Apply Gaussian blur for smoothness
+        logger.info("Applying Gaussian blur for smoothness...")
+        sigma = scaled_patch_size / 8  # Adjust blur radius based on patch size
+        heatmap_mask = gaussian_filter(heatmap_mask, sigma=sigma)
+        
+        # Normalize the blurred mask
+        if heatmap_mask.max() > 0:
+            heatmap_mask = heatmap_mask / heatmap_mask.max()
+        
+        # Apply colormap to the heatmap mask
+        logger.info("Applying colormap to heatmap...")
+        heatmap_colored = np.zeros((region_size[1], region_size[0], 4), dtype=np.float32)
+        
+        for i in range(region_size[1]):
+            for j in range(region_size[0]):
+                if heatmap_mask[i, j] > 0.01:  # Skip near-zero values
+                    heatmap_colored[i, j] = cmap_func(heatmap_mask[i, j])
+        
+        # Convert to uint8 for OpenCV
+        heatmap_colored = (heatmap_colored * 255).astype(np.uint8)
+        
+        # Create an RGBA image from the colormap
+        heatmap_img = Image.fromarray(heatmap_colored).convert("RGBA")
+        
+        # Convert WSI to RGBA for blending
+        wsi_img_rgba = Image.fromarray(wsi_img).convert("RGBA")
+        
+        # Blend images using PIL's alpha compositing
+        logger.info("Blending heatmap with WSI image...")
+        blended = Image.alpha_composite(wsi_img_rgba, heatmap_img)
         
         # Save the original WSI at this visualization level for comparison
         orig_wsi_path = os.path.join(
             os.path.dirname(output_path),
             f"{os.path.basename(output_path).split('_')[0]}_original.png"
         )
-        orig_img = np.array(wsi_object.wsi.read_region((0,0), vis_level, region_size).convert("RGB"))
-        Image.fromarray(orig_img).save(orig_wsi_path)
+        Image.fromarray(wsi_img).save(orig_wsi_path)
         logger.info(f"Saved original WSI thumbnail to: {orig_wsi_path}")
         
         # Save the heatmap
         logger.info("Saving the final heatmap...")
-        heatmap = Image.fromarray(img)
-        heatmap.save(output_path)
+        blended.convert("RGB").save(output_path)
         logger.success(f"Attention heatmap saved to: {output_path}")
         
         # Create a zoomed version focusing on the areas with attention
         try:
-            # Compute bounding box of non-zero attention points
-            min_x = min(coord[0] for coord, score in zip(scaled_coords, norm_scores) if score > threshold)
-            min_y = min(coord[1] for coord, score in zip(scaled_coords, norm_scores) if score > threshold)
-            max_x = max(coord[0] + scaled_patch_size for coord, score in zip(scaled_coords, norm_scores) if score > threshold)
-            max_y = max(coord[1] + scaled_patch_size for coord, score in zip(scaled_coords, norm_scores) if score > threshold)
+            # Find non-zero regions in the heatmap mask
+            non_zero_y, non_zero_x = np.where(heatmap_mask > 0.01)
             
-            # Add some padding
-            padding = scaled_patch_size * 2
-            min_x = max(0, min_x - padding)
-            min_y = max(0, min_y - padding)
-            max_x = min(region_size[0], max_x + padding)
-            max_y = min(region_size[1], max_y + padding)
-            
-            # Crop the image
-            zoom_img = img[min_y:max_y, min_x:max_x]
-            zoom_path = os.path.join(
-                os.path.dirname(output_path),
-                f"{os.path.basename(output_path).split('.')[0]}_zoomed.png"
-            )
-            Image.fromarray(zoom_img).save(zoom_path)
-            logger.info(f"Saved zoomed heatmap to: {zoom_path}")
+            if len(non_zero_y) > 0 and len(non_zero_x) > 0:
+                # Compute boundaries with padding
+                min_y, max_y = non_zero_y.min(), non_zero_y.max()
+                min_x, max_x = non_zero_x.min(), non_zero_x.max()
+                
+                # Add some padding
+                padding = scaled_patch_size * 2
+                min_x = max(0, min_x - padding)
+                min_y = max(0, min_y - padding)
+                max_x = min(region_size[0], max_x + padding)
+                max_y = min(region_size[1], max_y + padding)
+                
+                # Crop the image
+                zoom_img = np.array(blended.convert("RGB"))[min_y:max_y, min_x:max_x]
+                zoom_path = os.path.join(
+                    os.path.dirname(output_path),
+                    f"{os.path.basename(output_path).split('.')[0]}_zoomed.png"
+                )
+                Image.fromarray(zoom_img).save(zoom_path)
+                logger.info(f"Saved zoomed heatmap to: {zoom_path}")
         except Exception as e:
             logger.warning(f"Couldn't create zoomed view: {e}")
             
@@ -548,19 +551,21 @@ def predict_slide(slide_dataset, checkpoint_path):
     if hasattr(coords, '__len__') and hasattr(attention_scores, '__len__'):
         if len(coords) != len(attention_scores):
             logger.warning(f"Attention scores length ({len(attention_scores)}) doesn't match coords length ({len(coords)})")
-            # If single value or wrong size, expand to match coords
-            if len(attention_scores) == 1:
-                attention_scores = np.full(len(coords), attention_scores[0])
-            # If too many values, truncate
-            elif len(attention_scores) > len(coords):
-                attention_scores = attention_scores[:len(coords)]
-            # If too few values, pad with mean
-            else:
-                mean_score = np.mean(attention_scores)
-                attention_scores = np.pad(attention_scores, 
-                                        (0, len(coords) - len(attention_scores)), 
-                                        'constant', 
-                                        constant_values=mean_score)
+            
+            # If we have more attention scores than coordinates,
+            # use a smarter approach to map scores to coords
+            if len(attention_scores) > len(coords):
+                # Create an importance-based sampling
+                # Get the most important indices (highest attention scores)
+                sorted_indices = np.argsort(attention_scores)[::-1]
+                selected_indices = sorted_indices[:len(coords)]
+                # Sort them back to maintain original order
+                selected_indices.sort()
+                attention_scores = attention_scores[selected_indices]
+            else:  # len(attention_scores) < len(coords)
+                # Repeat or interpolate the scores
+                indices = np.round(np.linspace(0, len(attention_scores) - 1, len(coords))).astype(int)
+                attention_scores = attention_scores[indices]
     
     # Return all relevant information
     return {
