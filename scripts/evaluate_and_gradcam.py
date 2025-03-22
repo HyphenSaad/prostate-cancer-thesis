@@ -6,9 +6,10 @@ import sys
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
+import cv2
 from PIL import Image
 import h5py
-import cv2
+from datetime import datetime
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
@@ -22,6 +23,7 @@ from utils.wsi_core.wsi_utils import save_hdf5
 from encoders import get_encoder, get_custom_transformer
 from mil_models import find_mil_model
 from utils.logger import Logger
+from utils.file_utils import save_json
 
 logger = Logger()
 
@@ -37,10 +39,9 @@ CONFIG = {
     'checkpoint_path': None,
     'fold': 0,
     'slides_format': 'tiff',
-    'attention_heatmap': True,
-    'gradcam': True,
-    'alpha': 0.9,  # Very high transparency for visibility
-    'highlight_top_percent': 20,  # Highlight top 20% of patches
+    'attention_threshold': 0.5,
+    'color_map': 'inferno',  # Using a high-contrast colormap
+    'alpha': 0.7,  # Higher alpha for better visibility
     'directories': {
         'slides_directory': os.path.join(DATASET_BASE_DIRECTORY, DATASET_SLIDES_FOLDER_NAME),
         'output_directory': os.path.join(OUTPUT_BASE_DIRECTORY, 'evaluation_visualizations'),
@@ -63,11 +64,63 @@ def show_configs():
         logger.text(f"> Checkpoint Path: {CONFIG['checkpoint_path']}")
     else:
         logger.text(f"> Using fold {CONFIG['fold']} checkpoint")
-    logger.text(f"> Attention Heatmap: {CONFIG['attention_heatmap']}")
-    logger.text(f"> GradCAM: {CONFIG['gradcam']}")
+    logger.text(f"> Attention Threshold: {CONFIG['attention_threshold']}")
+    logger.text(f"> Color Map: {CONFIG['color_map']}")
     logger.text(f"> Alpha: {CONFIG['alpha']}")
-    logger.text(f"> Highlight Top %: {CONFIG['highlight_top_percent']}")
     logger.empty_line()
+
+class AttentionExtractor:
+    def __init__(self, model, device):
+        self.model = model
+        self.device = device
+        self.attentions = None
+        self.hooks = []
+        self._register_hooks()
+        
+    def _hook_fn(self, module, input, output):
+        if hasattr(module, 'attn'):
+            # If using NystromAttention in TransMIL
+            self.attentions = output.detach().cpu()
+        
+    def _register_hooks(self):
+        # For TransMIL, look for TransLayer modules
+        if hasattr(self.model, 'layer1'):
+            self.hooks.append(self.model.layer1.register_forward_hook(self._hook_fn))
+        if hasattr(self.model, 'layer2'):
+            self.hooks.append(self.model.layer2.register_forward_hook(self._hook_fn))
+    
+    def remove_hooks(self):
+        for hook in self.hooks:
+            hook.remove()
+        self.hooks = []
+        
+    def get_attention_scores(self, features):
+        # Forward pass to trigger hooks
+        with torch.no_grad():
+            _ = self.model(features.to(self.device))
+        
+        # If attention wasn't captured by hooks, use a default method
+        if self.attentions is None:
+            # Use logits or feature importance as a proxy for attention
+            outputs = self.model(features.to(self.device))
+            logits = outputs['wsi_logits'] 
+            # For multi-class, use the predicted class's logit
+            pred_class = torch.argmax(logits, dim=1).item()
+            
+            # Simple approach: use patch-level feature norms as proxy for attention
+            feature_norms = torch.norm(features.squeeze(0), dim=1).cpu().numpy()
+            
+            # Normalize to [0, 1]
+            attention_scores = (feature_norms - feature_norms.min()) / (feature_norms.max() - feature_norms.min() + 1e-8)
+            
+            logger.warning("Could not extract attention maps directly, using feature magnitude as proxy.")
+            return attention_scores, pred_class
+        else:
+            # Return the captured attention weights
+            attention_scores = self.attentions.numpy()
+            outputs = self.model(features.to(self.device))
+            pred_class = torch.argmax(outputs['wsi_logits'], dim=1).item()
+            return attention_scores, pred_class
 
 def create_patches_for_slide(slide_id, slide_path, output_dir):
     """
@@ -307,34 +360,6 @@ def load_mil_model():
         logger.error(f"Failed to load model: {e}")
         return None
 
-def generate_patch_importance(features):
-    """
-    Generate patch importance scores based on feature norms
-    """
-    # Compute L2 norm of feature vectors (measure of feature activation strength)
-    feature_norms = torch.norm(features, dim=1).cpu().numpy()
-    
-    # Find threshold for top N percent of patches
-    top_n_percent = CONFIG['highlight_top_percent']
-    threshold = np.percentile(feature_norms, 100 - top_n_percent)
-    
-    # Create binary importance - 1 for top patches, 0 for others
-    patch_importance = np.zeros_like(feature_norms)
-    patch_importance[feature_norms >= threshold] = 1.0
-    
-    # Add slight variations to make visualization more natural
-    np.random.seed(42)  # for reproducibility
-    
-    # For patches above threshold, add variation between 0.7-1.0
-    high_indices = patch_importance > 0
-    patch_importance[high_indices] = 0.7 + 0.3 * np.random.random(np.sum(high_indices))
-    
-    # For patches below threshold, add variation between 0.0-0.1
-    low_indices = patch_importance == 0
-    patch_importance[low_indices] = 0.1 * np.random.random(np.sum(low_indices))
-    
-    return patch_importance
-
 def predict_slide(model, features):
     """
     Generate prediction for a slide
@@ -362,136 +387,144 @@ def predict_slide(model, features):
     logger.success(f"Prediction: {result['predicted_class_name']} with probability {result['probabilities'][result['predicted_class_name']]:.4f}")
     return result
 
-def create_direct_heatmap_visualization(slide_id, importance_scores, coords, result):
+def create_attention_heatmap(slide_path, coords, attention_scores, patch_size, output_path):
     """
-    Create a more direct and visible heatmap by overlaying colored patches directly
+    Create and save attention heatmap overlay on the slide
+    Based on the reference implementation with improvements for visibility
     """
-    logger.info("Creating direct visualization...")
-    
-    slide_path = os.path.join(CONFIG['directories']['slides_directory'], f"{slide_id}.{CONFIG['slides_format']}")
-    
-    # Initialize WSI object
-    wsi_object = WholeSlideImage(slide_path, verbose=CONFIG['verbose'])
-    
-    # Determine visualization level
-    vis_level = wsi_object.wsi.get_best_level_for_downsample(32)
-    
-    # Get slide dimensions at visualization level
-    region_size = wsi_object.level_dim[vis_level]
-    
-    # Read the slide at visualization level
-    logger.info(f"Reading slide at visualization level {vis_level}...")
-    slide_img = np.array(wsi_object.wsi.read_region((0,0), vis_level, region_size).convert("RGB"))
-    
-    # Scale coordinates to the visualization level
-    downsample = wsi_object.level_downsamples[vis_level]
-    scale = [1/downsample[0], 1/downsample[1]]
-    scaled_coords = coords * np.array(scale)
-    scaled_coords = scaled_coords.astype(np.int32)
-    
-    # Scale patch size to the visualization level
-    scaled_patch_size = int(CONFIG['patch_size'] * scale[0])
-    
-    logger.info(f"Overlaying {len(importance_scores)} patches with heatmap...")
-    
-    # Create a heatmap colormap
-    cmap = plt.get_cmap('inferno')  # Using a colormap with high visibility
-    
-    # Create a copy of the slide image for overlay
-    heatmap_img = slide_img.copy()
-    
-    # Set a count for visualized patches
-    visualized_count = 0
-    
-    # We'll only color patches above a certain importance threshold for contrast
-    threshold = 0.5
-    high_importance_indices = importance_scores >= threshold
-    visualized_count = np.sum(high_importance_indices)
-    
-    logger.info(f"Highlighting {visualized_count} patches above threshold {threshold}")
-    
-    # Process each patch
-    for i, (coord, score) in enumerate(zip(scaled_coords, importance_scores)):
-        if score < threshold:
-            continue
-            
-        # Get patch coordinates
-        x, y = coord
-        
-        # Skip if out of bounds
-        if (x < 0 or y < 0 or 
-            x + scaled_patch_size > region_size[0] or 
-            y + scaled_patch_size > region_size[1]):
-            continue
-        
-        # Get color for this importance score - map to color
-        color = np.array(cmap(score)[:3]) * 255
-        
-        # Create a colored overlay patch
-        overlay = np.ones((scaled_patch_size, scaled_patch_size, 3), dtype=np.uint8) * color.astype(np.uint8)
-        
-        # Apply the overlay with high alpha to make it very visible
-        alpha = CONFIG['alpha']
-        heatmap_img[y:y+scaled_patch_size, x:x+scaled_patch_size] = cv2.addWeighted(
-            heatmap_img[y:y+scaled_patch_size, x:x+scaled_patch_size],
-            1 - alpha,
-            overlay,
-            alpha,
-            0
-        )
-        
-        # Draw a border around the patch for better visibility
-        cv2.rectangle(
-            heatmap_img,
-            (x, y),
-            (x + scaled_patch_size, y + scaled_patch_size),
-            (255, 255, 255),  # White border
-            2  # Border thickness
-        )
-    
-    # Save both the original slide and the heatmap overlay
-    logger.info("Saving visualization...")
-    
-    # Save original slide image for comparison
-    original_img_path = os.path.join(CONFIG['directories']['output_directory'], f"{slide_id}_original.png")
-    Image.fromarray(slide_img).save(original_img_path)
-    logger.success(f"Saved original slide image to: {original_img_path}")
-    
-    # Save heatmap overlay
-    output_filename = f"{slide_id}_prediction_{result['predicted_class']}_heatmap.png"
-    output_path = os.path.join(CONFIG['directories']['output_directory'], output_filename)
-    heatmap_img_pil = Image.fromarray(heatmap_img)
-    heatmap_img_pil.save(output_path)
-    
-    # Create a labeled version with the prediction text
-    labeled_img = Image.fromarray(heatmap_img)
-    labeled_path = os.path.join(CONFIG['directories']['output_directory'], f"{slide_id}_labeled_heatmap.png")
-    
-    # Add prediction text
-    from PIL import ImageDraw, ImageFont
-    draw = ImageDraw.Draw(labeled_img)
-    
-    # Try to load a font, fall back to default if not available
     try:
-        font = ImageFont.truetype("arial.ttf", 36)  # Larger font
-    except IOError:
-        font = ImageFont.load_default()
-    
-    # Add prediction text
-    text = f"Prediction: {result['predicted_class_name']} ({result['probabilities'][result['predicted_class_name']]:.2f})"
-    text_color = (255, 255, 255)
-    text_position = (20, 20)
-    
-    # Add text shadow for better visibility
-    draw.text((text_position[0]+2, text_position[1]+2), text, fill=(0, 0, 0), font=font)
-    draw.text(text_position, text, fill=text_color, font=font)
-    
-    labeled_img.save(labeled_path)
-    
-    logger.success(f"Saved heatmap visualization to: {output_path}")
-    logger.success(f"Saved labeled heatmap to: {labeled_path}")
-    
-    return output_path, labeled_path
+        # Validate inputs
+        if coords is None or len(coords) == 0:
+            logger.error("Coordinates are empty or None")
+            return False
+            
+        if attention_scores is None or len(attention_scores) == 0:
+            logger.error("Attention scores are empty or None")
+            return False
+            
+        # Ensure coords and scores have compatible lengths
+        if len(coords) != len(attention_scores):
+            logger.warning(f"Mismatch between coords ({len(coords)}) and attention scores ({len(attention_scores)})")
+            # Use the minimum length to avoid errors
+            min_len = min(len(coords), len(attention_scores))
+            coords = coords[:min_len]
+            attention_scores = attention_scores[:min_len]
+            
+        # Load the WSI
+        wsi_object = WholeSlideImage(slide_path, verbose=CONFIG['verbose'])
+        
+        # Ensure coords is a numpy array with the right shape
+        if not isinstance(coords, np.ndarray):
+            logger.warning("Converting coords to numpy array")
+            coords = np.array(coords)
+        
+        # Reshape coords if needed (should be a 2D array with shape [n, 2])
+        if coords.ndim == 1:
+            coords = coords.reshape(-1, 2)
+        
+        # Normalize attention scores to 0-1 range
+        norm_scores = (attention_scores - attention_scores.min()) / (attention_scores.max() - attention_scores.min() + 1e-8)
+        
+        # Log information for debugging
+        logger.info(f"Coords shape: {coords.shape}")
+        logger.info(f"Attention scores shape: {norm_scores.shape}")
+        logger.info(f"Creating heatmap with {len(coords)} points")
+        
+        # Determine the best visualization level for the whole slide
+        vis_level = wsi_object.wsi.get_best_level_for_downsample(32)
+        logger.info(f"Using visualization level: {vis_level}")
+        
+        # Create a colormap function to map attention scores to colors
+        cmap_func = plt.get_cmap(CONFIG['color_map'])
+        
+        # Determine the dimensions of the slide at the visualization level
+        region_size = wsi_object.level_dim[vis_level]
+        
+        # Read the WSI image at the visualization level as background
+        logger.info("Reading the whole slide image for background...")
+        img = np.array(wsi_object.wsi.read_region((0,0), vis_level, region_size).convert("RGB"))
+        
+        # Scale coordinates to the visualization level
+        downsample = wsi_object.level_downsamples[vis_level]
+        scale = [1/downsample[0], 1/downsample[1]]
+        scaled_coords = coords * np.array(scale)
+        scaled_coords = scaled_coords.astype(np.int32)
+        
+        # Scale patch size to the visualization level
+        scaled_patch_size = int(patch_size * scale[0])
+        
+        logger.info(f"Processing individual patches and applying heatmap...")
+        
+        # Create overlay for each patch
+        highlighted_count = 0
+        threshold = CONFIG['attention_threshold']
+        
+        for i, (coord, score) in enumerate(zip(scaled_coords, norm_scores)):
+            if i % 100 == 0 and i > 0:
+                logger.info(f"Processed {i}/{len(scaled_coords)} patches")
+                
+            # Get the patch coordinates
+            x, y = coord
+            
+            # Skip if out of bounds
+            if (x < 0 or y < 0 or 
+                x + scaled_patch_size > region_size[0] or 
+                y + scaled_patch_size > region_size[1]):
+                continue
+            
+            # Skip patches below threshold
+            if score < threshold:
+                continue
+                
+            highlighted_count += 1
+            
+            # Get color for this attention score
+            color = np.array(cmap_func(score)[:3]) * 255
+            
+            # Create overlay for this patch
+            overlay = np.ones((scaled_patch_size, scaled_patch_size, 3), dtype=np.uint8) * color.astype(np.uint8)
+            
+            # Apply the overlay using alpha blending
+            img[y:y+scaled_patch_size, x:x+scaled_patch_size] = cv2.addWeighted(
+                img[y:y+scaled_patch_size, x:x+scaled_patch_size],
+                1 - CONFIG['alpha'],
+                overlay,
+                CONFIG['alpha'],
+                0
+            )
+            
+            # Draw a white border around the patch for better visibility
+            cv2.rectangle(
+                img,
+                (x, y),
+                (x + scaled_patch_size, y + scaled_patch_size),
+                (255, 255, 255),  # White border
+                2  # Border thickness
+            )
+        
+        logger.info(f"Highlighted {highlighted_count} patches above threshold {threshold}")
+        
+        # Save the original WSI at this visualization level for comparison
+        orig_wsi_path = os.path.join(
+            os.path.dirname(output_path),
+            f"{os.path.basename(output_path).split('_')[0]}_original.png"
+        )
+        orig_img = np.array(wsi_object.wsi.read_region((0,0), vis_level, region_size).convert("RGB"))
+        Image.fromarray(orig_img).save(orig_wsi_path)
+        logger.info(f"Saved original WSI thumbnail to: {orig_wsi_path}")
+        
+        # Save the heatmap
+        logger.info("Saving the final heatmap...")
+        heatmap = Image.fromarray(img)
+        heatmap.save(output_path)
+        logger.success(f"Attention heatmap saved to: {output_path}")
+        
+        return True
+    except Exception as e:
+        logger.error(f"Error creating attention heatmap: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return False
 
 def main():
     logger.info(f"Processing slide {CONFIG['slide_id']}...")
@@ -556,23 +589,53 @@ def main():
     # Step 7: Run inference and get prediction
     result = predict_slide(model, features)
     
-    # Step 8: Generate patch importance 
-    # Using a simpler, more reliable approach that guarantees visible results
-    importance_scores = generate_patch_importance(features)
+    # Step 8: Extract attention scores using the AttentionExtractor
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    attention_extractor = AttentionExtractor(model, device)
+    attention_scores, pred_class = attention_extractor.get_attention_scores(features)
+    attention_extractor.remove_hooks()
     
-    # Step 9: Create direct heatmap visualization
-    viz_path, labeled_path = create_direct_heatmap_visualization(
-        CONFIG['slide_id'], 
-        importance_scores, 
-        coords, 
-        result
+    # Process attention scores if needed
+    if isinstance(attention_scores, np.ndarray) and attention_scores.ndim > 1:
+        # For simplicity, use mean across dimensions
+        attention_scores = np.mean(attention_scores, axis=tuple(range(attention_scores.ndim - 1)))
+    
+    # Ensure attention_scores has same length as coords
+    if len(attention_scores) != len(coords):
+        logger.warning(f"Attention scores length ({len(attention_scores)}) doesn't match coords length ({len(coords)})")
+        if len(attention_scores) > len(coords):
+            attention_scores = attention_scores[:len(coords)]
+        else:
+            # If too few values, pad with mean
+            mean_score = np.mean(attention_scores)
+            attention_scores = np.pad(attention_scores, 
+                                      (0, len(coords) - len(attention_scores)), 
+                                      'constant', 
+                                      constant_values=mean_score)
+    
+    # Step 9: Create attention heatmap using the reference implementation
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    heatmap_path = os.path.join(
+        CONFIG['directories']['output_directory'],
+        f"{CONFIG['slide_id']}_{timestamp}_attention.png"
     )
+    
+    success = create_attention_heatmap(
+        slide_path=slide_path,
+        coords=coords,
+        attention_scores=attention_scores,
+        patch_size=CONFIG['patch_size'],
+        output_path=heatmap_path
+    )
+    
+    if success:
+        logger.success(f"Attention heatmap saved to: {heatmap_path}")
+    else:
+        logger.error("Failed to create attention heatmap")
     
     logger.empty_line()
     logger.success(f"Evaluation complete for slide {CONFIG['slide_id']}")
     logger.success(f"Predicted class: {result['predicted_class_name']} with probability {result['probabilities'][result['predicted_class_name']]:.4f}")
-    logger.success(f"Visualization saved to {viz_path}")
-    logger.success(f"Labeled visualization saved to {labeled_path}")
 
 if __name__ == '__main__':
     try:
