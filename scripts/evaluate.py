@@ -250,9 +250,41 @@ def main():
   _, test_error, test_auc, acc_logger, df, test_f1, test_metrics = train_engine.eval_model(CONFIG['checkpoint_path'])
   
   if CONFIG['save_predictions']:
+    # Ensure the DataFrame has clear column names for predictions vs actual
+    if 'slide_id' not in df.columns:
+      logger.warning("Slide IDs not found in prediction data, results may be difficult to interpret")
+    
+    # Make sure we have both actual and predicted labels with clear column names
+    column_mapping = {}
+    if 'label' in df.columns:
+      column_mapping['label'] = 'actual_label'
+    if 'Y_hat' in df.columns:
+      column_mapping['Y_hat'] = 'predicted_label'
+    
+    # Rename columns if needed
+    if column_mapping:
+      df = df.rename(columns=column_mapping)
+    
+    # Add any missing columns that should be present
+    if 'predicted_label' not in df.columns and 'Y_hat' in test_metrics:
+      df['predicted_label'] = test_metrics['Y_hat']
+    if 'actual_label' not in df.columns and 'label' in test_metrics:
+      df['actual_label'] = test_metrics['label']
+    
+    # Create a simple prediction accuracy column
+    if 'actual_label' in df.columns and 'predicted_label' in df.columns:
+      df['correct_prediction'] = df['actual_label'] == df['predicted_label']
+    
     predictions_path = os.path.join(model_output_dir, "predictions.csv")
     logger.info(f"Saving predictions to {predictions_path}")
     df.to_csv(predictions_path, index=False)
+    
+    # Also save a simpler CSV with just the essential columns
+    essential_cols = [col for col in ['slide_id', 'actual_label', 'predicted_label', 'correct_prediction'] if col in df.columns]
+    if len(essential_cols) >= 2:  # At minimum need actual and predicted
+      simple_predictions_path = os.path.join(model_output_dir, "predictions_summary.csv")
+      logger.info(f"Saving simplified predictions to {simple_predictions_path}")
+      df[essential_cols].to_csv(simple_predictions_path, index=False)
   
   metrics_path = os.path.join(model_output_dir, "metrics.json")
   metrics_to_save = {
