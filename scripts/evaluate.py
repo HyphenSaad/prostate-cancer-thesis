@@ -175,7 +175,6 @@ def load_arguments():
   CONFIG['directories']['extract_patches_directory'] = os.path.join(output_base_dir, 'extract_patches')
   CONFIG['directories']['features_pt_directory'] = os.path.join(output_base_dir, 'extract_features', 'pt_files')
 
-  # If checkpoint_path not provided, generate based on other parameters
   if CONFIG['checkpoint_path'] is None:
     CONFIG['checkpoint_path'] = os.path.join(
       CONFIG['directories']['train_directory'],
