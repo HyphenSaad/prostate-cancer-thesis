@@ -576,9 +576,9 @@ class TrainEngine:
           label = label.to(self.device)
 
         if hasattr(self.model, 'wsi_predict'):
-          outputs = self.model.wsi_predict(data, **batch)
+          outputs = self.model.wsi_predict(data, return_attention=True, **batch)
         else: # use universal code to update param
-          outputs = self.model(data)
+          outputs = self.model(data, return_attention=True)
 
         logits, Y_prob, Y_hat = outputs['wsi_logits'], outputs['wsi_prob'], outputs['wsi_label']
         slide_id = slide_ids.iloc[batch_idx]
@@ -589,7 +589,28 @@ class TrainEngine:
         all_labels[batch_idx] = label.item()
         all_preds[batch_idx] = Y_hat.item()
         
-        patient_results.update({slide_id: {'slide_id': np.array(slide_id), 'prob': probs, 'label': label.item()}})
+        # Create result dictionary with basic info
+        result_dict = {
+          'slide_id': np.array(slide_id), 
+          'prob': probs, 
+          'label': label.item()
+        }
+        
+        # Check if attention map is in the outputs
+        if 'attention' in outputs:
+          result_dict['attention'] = outputs['attention']
+        elif 'A' in outputs:  # ABMIL and some other models use 'A' for attention
+          result_dict['attention'] = outputs['A']
+        elif hasattr(self.model, 'get_attention_map'):
+          # Try to get attention map through a model method if available
+          try:
+            attention = self.model.get_attention_map(data)
+            result_dict['attention'] = attention
+          except Exception as e:
+            if self.verbose:
+              self.logger.warning(f"Failed to get attention map: {str(e)}")
+              
+        patient_results.update({slide_id: result_dict})
         error = calculate_error(Y_hat, label)
         test_error += error
         
