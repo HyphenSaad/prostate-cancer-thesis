@@ -34,7 +34,7 @@ CONFIG = {
     'patch_size': 512,
     'in_dim': 1024,
     'drop_out': 0.25,
-    'slide_id': '00bbc1482301d16de3ff63238cfd0b34',  # Hardcoded slide ID as requested
+    'slide_id': '037c18f1a1ec42be86eed81b09867939',  # Hardcoded slide ID as requested
     'checkpoint_path': None,
     'fold': 0,
     'slides_format': 'tiff',
