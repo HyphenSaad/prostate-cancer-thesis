@@ -228,57 +228,6 @@ def load_arguments():
             f"s_{CONFIG['fold']}_checkpoint.pt"
         )
 
-class AttentionExtractor:
-    def __init__(self, model, device):
-        self.model = model
-        self.device = device
-        self.attentions = None
-        self.hooks = []
-        self._register_hooks()
-        
-    def _hook_fn(self, module, input, output):
-        if hasattr(module, 'attn'):
-            # If using NystromAttention in TransMIL
-            self.attentions = output.detach().cpu()
-        
-    def _register_hooks(self):
-        # For TransMIL, look for TransLayer modules
-        if hasattr(self.model, 'layer1'):
-            self.hooks.append(self.model.layer1.register_forward_hook(self._hook_fn))
-        if hasattr(self.model, 'layer2'):
-            self.hooks.append(self.model.layer2.register_forward_hook(self._hook_fn))
-    
-    def remove_hooks(self):
-        for hook in self.hooks:
-            hook.remove()
-        self.hooks = []
-        
-    def get_attention_scores(self, features):
-        # Forward pass to trigger hooks
-        with torch.no_grad():
-            _ = self.model(features.to(self.device))
-        
-        # If attention wasn't captured by hooks, use a default method
-        if self.attentions is None:
-            # Use logits or feature importance as a proxy for attention
-            outputs = self.model(features.to(self.device))
-            logits = outputs['wsi_logits'] 
-            # For multi-class, use the predicted class's logit
-            pred_class = torch.argmax(logits, dim=1).item()
-            
-            # Simple approach: use patch-level scores based on feature importance
-            # This is a fallback when direct attention extraction fails
-            attention_scores = torch.ones(features.shape[1])  # Default to uniform attention
-            
-            logger.warning("Could not extract attention maps directly, using proxy method.")
-            return attention_scores.numpy(), pred_class
-        else:
-            # Return the captured attention weights
-            attention_scores = self.attentions.numpy()
-            outputs = self.model(features.to(self.device))
-            pred_class = torch.argmax(outputs['wsi_logits'], dim=1).item()
-            return attention_scores, pred_class
-
 def create_attention_heatmap(
     slide_path, 
     coords, 
@@ -325,65 +274,111 @@ def create_attention_heatmap(
         scaled_coords = (coords * np.array(scale)).astype(np.int32)
         scaled_patch_size = int(patch_size * scale[0])
         
+        # Check if attention_scores is multi-dimensional (contains multiple attention maps)
+        multi_attention = False
+        attention_layers = []
+        original_attention_shape = np.array(attention_scores).shape
+        
+        # Handle multi-dimensional attention scores (from different layers/heads)
+        if isinstance(attention_scores, np.ndarray) and attention_scores.ndim > 1:
+            multi_attention = True
+            # Store the original multi-dimensional structure
+            if attention_scores.ndim == 2:
+                # Single layer with multiple heads
+                attention_layers = [attention_scores]
+            else:
+                # Multiple layers
+                for layer_idx in range(attention_scores.shape[0]):
+                    attention_layers.append(attention_scores[layer_idx])
+            
+            # For the main heatmap, use the mean across all dimensions
+            attention_scores = np.mean(attention_scores, axis=tuple(range(attention_scores.ndim - 1)))
+            logger.info(f"Using mean of {len(attention_layers)} attention layers/heads for main heatmap")
+        
         # Create empty heatmap canvas
         heatmap = np.zeros((region_size[1], region_size[0]), dtype=np.float32)
         
-        # Fill heatmap with attention values - each patch gets its attention score
+        # Fill heatmap with attention values - fill areas based on patch size
+        logger.info(f"Creating base heatmap from {len(coords)} patches...")
         for i, (coord, score) in enumerate(zip(scaled_coords, attention_scores)):
-            x, y = coord
+            # Get the full patch area
+            x_start = max(0, coord[0])
+            y_start = max(0, coord[1])
+            x_end = min(region_size[0], coord[0] + scaled_patch_size)
+            y_end = min(region_size[1], coord[1] + scaled_patch_size)
             
-            # Skip if coordinates are outside the image
-            if (x < 0 or y < 0 or 
-                x >= region_size[0] or y >= region_size[1]):
+            if x_end <= x_start or y_end <= y_start:
                 continue
-            
-            # Get valid patch area (handle edge cases)
-            x_start = max(0, x)
-            y_start = max(0, y)
-            x_end = min(region_size[0], x + scaled_patch_size)
-            y_end = min(region_size[1], y + scaled_patch_size)
-            
-            # Fill entire patch area with attention score
+                
+            # Fill the entire patch area with the attention score
             heatmap[y_start:y_end, x_start:x_end] = score
         
-        # Apply Gaussian blur for smoothness - use patch size to determine sigma
-        sigma = scaled_patch_size / 3  # Smaller divisor = less blur
-        logger.info(f"Applying Gaussian blur with sigma={sigma:.2f}")
+        # Apply a stronger Gaussian blur for more smoothness
+        # Increase sigma to make it smoother
+        sigma = scaled_patch_size   # Using the full patch size for maximum smoothness
+        logger.info(f"Applying strong Gaussian blur with sigma={sigma:.2f}")
         heatmap = gaussian_filter(heatmap, sigma=sigma)
         
-        # Normalize after blur for visualization
+        # Normalize for visualization
         if np.max(heatmap) > 0:
             heatmap = heatmap / np.max(heatmap)
-        
-        # Apply threshold if requested
+            
+        # Apply threshold if specified
         if threshold > 0:
             heatmap[heatmap < threshold] = 0
         
         # Save original WSI
         orig_path = os.path.join(os.path.dirname(output_path), f"{os.path.basename(output_path).split('_')[0]}_original.png")
         Image.fromarray(wsi_img).save(orig_path)
+        logger.info(f"Saved original WSI to: {orig_path}")
         
-        # Apply colormap for visualization
-        heatmap_uint8 = np.uint8(255 * heatmap)
-        heatmap_colored = cv2.applyColorMap(heatmap_uint8, cv2.COLORMAP_JET)
-        heatmap_colored = cv2.cvtColor(heatmap_colored, cv2.COLOR_BGR2RGB)
+        # Create and save the main heatmap
+        save_heatmap_overlay(wsi_img, heatmap, output_path, cmap, alpha)
         
-        # Create overlay
-        overlay = cv2.addWeighted(heatmap_colored, alpha, wsi_img, 1 - alpha, 0)
-        
-        # Save results
-        Image.fromarray(overlay).save(output_path)
-        logger.success(f"Attention heatmap saved to: {output_path}")
-        
-        # Save heatmap-only version
-        heatmap_path = os.path.join(os.path.dirname(output_path), f"{os.path.basename(output_path).split('.')[0]}_heatmap.png")
-        plt.figure(figsize=(10, 8))
-        plt.imshow(heatmap, cmap=cmap)
-        plt.colorbar(label='Attention Score')
-        plt.axis('off')
-        plt.tight_layout()
-        plt.savefig(heatmap_path, bbox_inches='tight')
-        plt.close()
+        # If we have multiple attention layers, create separate heatmaps for each
+        if multi_attention and attention_layers:
+            logger.info(f"Creating separate heatmaps for {len(attention_layers)} attention layers/heads")
+            for layer_idx, layer_attention in enumerate(attention_layers):
+                if layer_idx >= 3:  # Limit to first 3 layers to avoid too many files
+                    break
+                    
+                # Create a layer-specific heatmap
+                layer_heatmap = np.zeros((region_size[1], region_size[0]), dtype=np.float32)
+                
+                # If layer_attention is 2D, take the mean across 2nd dimension (heads)
+                if layer_attention.ndim > 1:
+                    layer_scores = np.mean(layer_attention, axis=tuple(range(layer_attention.ndim - 1)))
+                else:
+                    layer_scores = layer_attention
+                
+                # Fill the layer heatmap
+                for i, (coord, score) in enumerate(zip(scaled_coords, layer_scores)):
+                    x_start = max(0, coord[0])
+                    y_start = max(0, coord[1])
+                    x_end = min(region_size[0], coord[0] + scaled_patch_size)
+                    y_end = min(region_size[1], coord[1] + scaled_patch_size)
+                    
+                    if x_end <= x_start or y_end <= y_start:
+                        continue
+                        
+                    layer_heatmap[y_start:y_end, x_start:x_end] = score
+                
+                # Apply strong Gaussian blur
+                layer_heatmap = gaussian_filter(layer_heatmap, sigma=sigma)
+                
+                # Normalize
+                if np.max(layer_heatmap) > 0:
+                    layer_heatmap = layer_heatmap / np.max(layer_heatmap)
+                
+                # Create layer-specific output path
+                layer_output_path = os.path.join(
+                    os.path.dirname(output_path),
+                    f"{os.path.basename(output_path).split('.')[0]}_layer{layer_idx+1}.png"
+                )
+                
+                # Save layer heatmap
+                save_heatmap_overlay(wsi_img, layer_heatmap, layer_output_path, cmap, alpha)
+                logger.info(f"Saved layer {layer_idx+1} attention heatmap to: {layer_output_path}")
         
         return True
     except Exception as e:
@@ -391,6 +386,108 @@ def create_attention_heatmap(
         import traceback
         logger.error(traceback.format_exc())
         return False
+
+def save_heatmap_overlay(wsi_img, heatmap, output_path, cmap='jet', alpha=0.7):
+    """Helper function to apply colormap and save heatmap overlay"""
+    try:
+        # Apply colormap to create colored heatmap
+        heatmap_uint8 = np.uint8(255 * heatmap)
+        
+        # Create a more continuous and smooth color gradient
+        heatmap_colored = cv2.applyColorMap(heatmap_uint8, cv2.COLORMAP_JET)
+        heatmap_colored = cv2.cvtColor(heatmap_colored, cv2.COLOR_BGR2RGB)
+        
+        # Create overlay with weighted blending
+        overlay = cv2.addWeighted(heatmap_colored, alpha, wsi_img, 1 - alpha, 0)
+        
+        # Save the overlay
+        Image.fromarray(overlay).save(output_path)
+        logger.info(f"Saved attention overlay to: {output_path}")
+        
+        # Save separate heatmap-only version
+        heatmap_path = os.path.join(
+            os.path.dirname(output_path),
+            f"{os.path.basename(output_path).split('.')[0]}_heatmap.png"
+        )
+        
+        # Create visual heatmap with matplotlib for better appearance
+        plt.figure(figsize=(12, 10))
+        plt.imshow(heatmap, cmap=cmap)
+        plt.colorbar(label='Attention Score')
+        plt.title('Attention Heatmap')
+        plt.axis('off')
+        plt.tight_layout()
+        plt.savefig(heatmap_path, bbox_inches='tight', dpi=300)
+        plt.close()
+        logger.info(f"Saved heatmap-only version to: {heatmap_path}")
+        
+        return True
+    except Exception as e:
+        logger.error(f"Error saving heatmap overlay: {e}")
+        return False
+
+class AttentionExtractor:
+    def __init__(self, model, device):
+        self.model = model
+        self.device = device
+        self.attentions = None
+        self.all_attentions = []  # Store all attention layers
+        self.hooks = []
+        self._register_hooks()
+        
+    def _hook_fn(self, module, input, output):
+        # For TransMIL model's attention mechanism
+        if hasattr(module, 'attn'):
+            curr_attention = output.detach().cpu()
+            self.all_attentions.append(curr_attention)
+            # We'll also keep the last attention for backward compatibility
+            self.attentions = curr_attention
+    
+    def _register_hooks(self):
+        # Register hooks for all potential attention layers
+        if hasattr(self.model, 'layer1'):
+            self.hooks.append(self.model.layer1.register_forward_hook(self._hook_fn))
+        if hasattr(self.model, 'layer2'):
+            self.hooks.append(self.model.layer2.register_forward_hook(self._hook_fn))
+            
+        # Add hooks for other potential attention layers or modules
+        if hasattr(self.model, '_fc1') and isinstance(self.model._fc1, torch.nn.Sequential):
+            for module in self.model._fc1:
+                if hasattr(module, 'attn'):
+                    self.hooks.append(module.register_forward_hook(self._hook_fn))
+    
+    def remove_hooks(self):
+        for hook in self.hooks:
+            hook.remove()
+        self.hooks = []
+        
+    def get_attention_scores(self, features):
+        # Reset attention storage before forward pass
+        self.attentions = None
+        self.all_attentions = []
+        
+        # Forward pass to trigger hooks
+        with torch.no_grad():
+            _ = self.model(features.to(self.device))
+        
+        # Output from the model for class prediction
+        outputs = self.model(features.to(self.device))
+        pred_class = torch.argmax(outputs['wsi_logits'], dim=1).item()
+        
+        # If we have multiple attention layers, return them all
+        if len(self.all_attentions) > 0:
+            # Convert list of tensors to a single numpy array
+            attention_array = np.array([attn.numpy() for attn in self.all_attentions])
+            logger.info(f"Extracted {len(self.all_attentions)} attention layers")
+            return attention_array, pred_class
+        
+        # Fallback if no attention captured through hooks
+        if self.attentions is None:
+            logger.warning("Could not extract attention maps directly, using proxy method.")
+            attention_scores = torch.ones(features.shape[1])  # Default to uniform attention
+            return attention_scores.numpy(), pred_class
+        else:
+            return self.attentions.numpy(), pred_class
 
 def prepare_slide_dataset(slide_id):
     """Prepare a dataset containing only the specified slide"""
