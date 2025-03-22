@@ -8,9 +8,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
 import h5py
-import time
 import cv2
-from sklearn.preprocessing import MinMaxScaler
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
@@ -41,7 +39,7 @@ CONFIG = {
     'slides_format': 'tiff',
     'attention_heatmap': True,
     'gradcam': True,
-    'alpha': 0.7,  # Increased transparency of heatmap overlay
+    'alpha': 0.7,  # Transparency of heatmap overlay
     'directories': {
         'slides_directory': os.path.join(DATASET_BASE_DIRECTORY, DATASET_SLIDES_FOLDER_NAME),
         'output_directory': os.path.join(OUTPUT_BASE_DIRECTORY, 'evaluation_visualizations'),
@@ -67,6 +65,66 @@ def show_configs():
     logger.text(f"> Attention Heatmap: {CONFIG['attention_heatmap']}")
     logger.text(f"> GradCAM: {CONFIG['gradcam']}")
     logger.empty_line()
+
+class AttentionExtractor:
+    def __init__(self, model, device):
+        self.model = model
+        self.device = device
+        self.attentions = None
+        self.hooks = []
+        self._register_hooks()
+        
+    def _hook_fn(self, module, input, output):
+        if isinstance(output, tuple) and len(output) > 1:
+            # Store attention weights (second element of output tuple)
+            self.attentions = output[1].detach().cpu()
+        
+    def _register_hooks(self):
+        # Register hooks on TransMIL's attention layers
+        if hasattr(self.model, 'layer1'):
+            if hasattr(self.model.layer1, 'attn'):
+                self.hooks.append(self.model.layer1.attn.register_forward_hook(self._hook_fn))
+        
+        if hasattr(self.model, 'layer2'):
+            if hasattr(self.model.layer2, 'attn'):
+                self.hooks.append(self.model.layer2.attn.register_forward_hook(self._hook_fn))
+    
+    def remove_hooks(self):
+        for hook in self.hooks:
+            hook.remove()
+        self.hooks = []
+        
+    def get_attention_scores(self, features):
+        # Forward pass to trigger hooks
+        with torch.no_grad():
+            outputs = self.model(features.unsqueeze(0).to(self.device))
+            pred_class = torch.argmax(outputs['wsi_logits'], dim=1).item()
+        
+        if self.attentions is None:
+            logger.error("Failed to extract attention from model")
+            return None, pred_class
+        
+        # Process attention weights 
+        # Typically shape: [batch, heads, seq_len, seq_len]
+        attention = self.attentions
+        
+        # Average across heads if multi-head attention
+        if len(attention.shape) == 4:
+            attention = attention.mean(dim=1)  # [batch, seq_len, seq_len]
+        
+        # Get attention from CLS token (first token) to other tokens
+        attention_scores = attention[0, 0, 1:].numpy()
+        
+        # Make sure attention_scores has the right length
+        if len(attention_scores) != len(features):
+            logger.warning(f"Attention scores length ({len(attention_scores)}) doesn't match features length ({len(features)})")
+            if len(attention_scores) > len(features):
+                attention_scores = attention_scores[:len(features)]
+            else:
+                # If too short, pad with zeros
+                attention_scores = np.pad(attention_scores, (0, len(features) - len(attention_scores)), 'constant')
+        
+        return attention_scores, pred_class
 
 def create_patches_for_slide(slide_id, slide_path, output_dir):
     """
@@ -306,109 +364,6 @@ def load_mil_model():
         logger.error(f"Failed to load model: {e}")
         return None
 
-def generate_synthetic_attention(features, top_k_percent=0.1):
-    """
-    Generate synthetic attention based on feature norms
-    This is a fallback method when model-based attention methods fail
-    """
-    # Calculate feature norms
-    feature_norms = torch.norm(features, dim=1).cpu().numpy()
-    
-    # Create attention scores with high contrast
-    # Start with all zeros (lowest attention)
-    attention_scores = np.zeros(len(feature_norms))
-    
-    # Set the top k% to high values (creates more contrast)
-    top_k = int(len(feature_norms) * top_k_percent)
-    top_indices = np.argsort(feature_norms)[-top_k:]
-    attention_scores[top_indices] = 1.0
-    
-    # Add some randomness for more natural looking heatmap
-    np.random.seed(42)  # for reproducibility
-    attention_scores += np.random.uniform(0, 0.2, size=len(attention_scores))
-    
-    # Apply exponential to increase contrast
-    attention_scores = np.exp(attention_scores) - 1
-    
-    # Normalize
-    attention_scores = (attention_scores - attention_scores.min()) / (attention_scores.max() - attention_scores.min() + 1e-8)
-    
-    return attention_scores
-
-def extract_transmil_attention(model, features):
-    """
-    Create a simple but visually effective attention map
-    """
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    features = features.to(device)
-    num_features = len(features)
-    
-    # Method 1: Try extracting attention from model
-    try:
-        # Store intermediate outputs
-        attention_outputs = []
-        
-        # Register hook for TransMIL's layer2 attention
-        def attention_hook(module, input, output):
-            if isinstance(output, tuple) and len(output) > 1:
-                attention_outputs.append(output[1].detach().cpu())
-        
-        # Add hooks to potentially relevant layers
-        hooks = []
-        
-        # Try to add hook to the attention mechanism
-        if hasattr(model, 'layer2') and hasattr(model.layer2, 'attn'):
-            hooks.append(model.layer2.attn.register_forward_hook(attention_hook))
-        
-        # Forward pass
-        with torch.no_grad():
-            _ = model(features.unsqueeze(0))
-        
-        # Remove hooks
-        for hook in hooks:
-            hook.remove()
-        
-        # Process attention if captured
-        if attention_outputs:
-            attention = attention_outputs[-1]
-            
-            # For typical transformer attention: [batch, heads, seq_len, seq_len]
-            if len(attention.shape) >= 3:
-                # Get attention from CLS token to patch tokens
-                if len(attention.shape) == 4:  # Multi-head
-                    attention = attention.mean(dim=1)  # Average over heads
-                
-                if attention.shape[1] > 1:  # Has CLS token
-                    # Get attention from CLS token to patches
-                    attn_scores = attention[0, 0, 1:].numpy()
-                    
-                    # Adapt size if needed
-                    if len(attn_scores) != num_features:
-                        if len(attn_scores) > num_features:
-                            attn_scores = attn_scores[:num_features]
-                        else:
-                            # If not enough scores, use what we have and fill the rest with zeros
-                            tmp = np.zeros(num_features)
-                            tmp[:len(attn_scores)] = attn_scores
-                            attn_scores = tmp
-                            
-                    # Enhance visual effect
-                    attn_scores = attn_scores**3  # Cube to increase contrast
-                    
-                    # Normalize
-                    if attn_scores.max() > attn_scores.min():
-                        attn_scores = (attn_scores - attn_scores.min()) / (attn_scores.max() - attn_scores.min())
-                    else:
-                        attn_scores = np.ones_like(attn_scores)
-                    
-                    return attn_scores
-    except Exception as e:
-        logger.warning(f"Failed to extract attention from model: {e}")
-    
-    # If we reach here, use the synthetic method
-    logger.warning("Using synthetic attention method")
-    return generate_synthetic_attention(features)
-
 def predict_slide(model, features):
     """
     Generate prediction for a slide
@@ -583,8 +538,18 @@ def main():
     # Step 7: Run inference and get prediction
     result = predict_slide(model, features)
     
-    # Step 8: Generate attention map with the improved method
-    attention_scores = extract_transmil_attention(model, features)
+    # Step 8: Extract attention using hook-based approach
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    attention_extractor = AttentionExtractor(model, device)
+    attention_scores, _ = attention_extractor.get_attention_scores(features)
+    attention_extractor.remove_hooks()
+    
+    if attention_scores is None:
+        logger.error("Failed to extract attention scores")
+        return
+        
+    # Normalize attention scores
+    attention_scores = (attention_scores - attention_scores.min()) / (attention_scores.max() - attention_scores.min() + 1e-8)
     
     # Step 9: Create and save visualization
     viz_path, labeled_path = create_visualization(CONFIG['slide_id'], attention_scores, coords, result)
