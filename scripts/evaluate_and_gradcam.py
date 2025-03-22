@@ -34,7 +34,7 @@ CONFIG = {
     'patch_size': 512,
     'in_dim': 1024,
     'drop_out': 0.25,
-    'slide_id': '037c18f1a1ec42be86eed81b09867939',  # Hardcoded slide ID as requested
+    'slide_id': '037c18f1a1ec42be86eed81b09867939',  # Hardcoded slide ID
     'checkpoint_path': None,
     'fold': 0,
     'slides_format': 'tiff',
@@ -305,78 +305,205 @@ def load_mil_model():
         logger.error(f"Failed to load model: {e}")
         return None
 
-def get_attention_map(model, features, coords):
+def register_gradcam_hooks(model):
     """
-    Generate attention map using the MIL model's attention mechanism
+    Register hooks for GradCAM
     """
-    logger.info("Generating attention map...")
+    # Storage for activations and gradients
+    activations = {}
+    gradients = {}
     
+    def forward_hook(name):
+        def hook(module, input, output):
+            activations[name] = output.detach()
+        return hook
+    
+    def backward_hook(name):
+        def hook(module, grad_in, grad_out):
+            gradients[name] = grad_out[0].detach()
+        return hook
+    
+    # Register hooks on model layers
+    # For TransMIL, we're interested in the output of the transformer layers
+    handles = []
+    
+    # Hook on the layer1 of TransMIL
+    if hasattr(model, 'layer1'):
+        handles.append(model.layer1.register_forward_hook(forward_hook('layer1')))
+        handles.append(model.layer1.register_full_backward_hook(backward_hook('layer1')))
+    
+    # Also hook the cls token embedding - this is crucial for TransMIL
+    if hasattr(model, 'cls_token'):
+        # We use a special name for the cls token
+        def cls_forward_hook(module, input, output):
+            # Save a copy of the cls token embedding
+            activations['cls_token'] = model.cls_token.detach()
+        
+        def cls_backward_hook(module, grad_in, grad_out):
+            # Capture gradients flowing to the cls token
+            if hasattr(model.cls_token, 'grad') and model.cls_token.grad is not None:
+                gradients['cls_token'] = model.cls_token.grad.detach()
+        
+        # Register these hooks on any convenient layer that's executed early in the forward pass
+        if hasattr(model, '_fc1'):
+            handles.append(model._fc1.register_forward_hook(cls_forward_hook))
+            handles.append(model._fc1.register_full_backward_hook(cls_backward_hook))
+    
+    # Add a hook for the PPEG layer which is responsible for position encoding
+    if hasattr(model, 'pos_layer'):
+        handles.append(model.pos_layer.register_forward_hook(forward_hook('pos_layer')))
+        handles.append(model.pos_layer.register_full_backward_hook(backward_hook('pos_layer')))
+    
+    # Add hooks for the final layer that produces attention maps
+    if hasattr(model, 'layer2'):
+        handles.append(model.layer2.register_forward_hook(forward_hook('layer2')))
+        handles.append(model.layer2.register_full_backward_hook(backward_hook('layer2')))
+        
+        # For TransMIL, specifically target the attention mechanism
+        if hasattr(model.layer2, 'attn'):
+            handles.append(model.layer2.attn.register_forward_hook(forward_hook('attn')))
+            handles.append(model.layer2.attn.register_full_backward_hook(backward_hook('attn')))
+    
+    return activations, gradients, handles
+
+def extract_transmil_attention(model, features):
+    """
+    Extract attention maps directly from TransMIL model
+    """
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     features = features.to(device)
+    features_orig = features.clone()  # Keep an unmodified copy
     
-    # For TransMIL, we need to extract attention weights
+    # Need a copy that requires grad for GradCAM
+    if CONFIG['gradcam']:
+        # Turn on gradients for input features
+        features.requires_grad_(True)
+    
+    # Register hooks for tracking activations and gradients
+    activations, gradients, handles = register_gradcam_hooks(model)
+    
+    # Custom forward function to capture intermediate outputs
+    attention_weights = []
+    
+    def attention_hook(module, args, output):
+        # Check if this is a tuple containing attention weights
+        if isinstance(output, tuple) and len(output) > 1:
+            attention_weights.append(output[1].detach().cpu())
+    
+    # Register specific hooks for the self-attention layers
+    if hasattr(model, 'layer1'):
+        if hasattr(model.layer1, 'attn'):
+            attn_hook_handle = model.layer1.attn.register_forward_hook(attention_hook)
+    
+    if hasattr(model, 'layer2'):
+        if hasattr(model.layer2, 'attn'):
+            attn_hook_handle2 = model.layer2.attn.register_forward_hook(attention_hook)
+    
+    # Forward pass to get predictions and capture activations
+    outputs = model(features.unsqueeze(0))
+    logits = outputs['wsi_logits']
+    pred_class = torch.argmax(logits, dim=1).item()
+    
+    if CONFIG['gradcam']:
+        # Clear any previous gradients
+        model.zero_grad()
+        
+        # Target for backprop is one-hot for the predicted class
+        one_hot = torch.zeros_like(logits)
+        one_hot[0, pred_class] = 1
+        
+        # Backward pass to get gradients
+        logits.backward(gradient=one_hot, retain_graph=True)
+    
+    # Remove the hooks
+    for handle in handles:
+        handle.remove()
+    
+    if hasattr(locals(), 'attn_hook_handle'):
+        attn_hook_handle.remove()
+    
+    if hasattr(locals(), 'attn_hook_handle2'):
+        attn_hook_handle2.remove()
+    
+    # Generate attention scores
     attention_scores = None
     
-    if CONFIG['mil_model'] == MILModels.TRANS_MIL.value:
-        # Forward pass with hook to capture attention
-        outputs = {}
-        attention_hook_handle = None
+    # First check if we captured attention weights directly
+    if attention_weights:
+        # Use the last layer's attention weights
+        attention = attention_weights[-1]
         
-        def hook_fn(module, input, output):
-            # For TransMIL, this will capture attention weights
-            if isinstance(output, tuple) and len(output) > 1:
-                outputs['attention'] = output[1]
-            else:
-                # If output structure is different, try to get attention from module
-                if hasattr(module, 'attention_weights'):
-                    outputs['attention'] = module.attention_weights
-        
-        # Register hook (this is model-specific and might need adjustment)
-        if hasattr(model, 'layer2') and hasattr(model.layer2, 'attn'):
-            attention_hook_handle = model.layer2.attn.register_forward_hook(hook_fn)
-        elif hasattr(model, 'attn'):
-            attention_hook_handle = model.attn.register_forward_hook(hook_fn)
+        # Typically, attention shape is [batch, heads, seq_len, seq_len]
+        # We want the attention from CLS token (index 0) to the patch tokens
+        if len(attention.shape) == 4:  # [batch, heads, seq_len, seq_len]
+            # Average across attention heads
+            attention = attention.mean(dim=1)  # [batch, seq_len, seq_len]
             
-        # Run inference
-        with torch.no_grad():
-            _ = model(features.unsqueeze(0))
-            
-        if attention_hook_handle:
-            attention_hook_handle.remove()
-            
-        if 'attention' in outputs:
-            # Process attention scores
-            attention = outputs['attention']
-            # Average across heads if multi-head attention
-            if len(attention.shape) > 3:
-                attention = attention.mean(dim=1)
-            # Take the scores related to the CLS token attending to patches
-            attention_scores = attention[0, 0, 1:].cpu().numpy()
-            
-            # Make sure we have the right number of attention scores
-            if len(attention_scores) < len(features):
-                # Pad with zeros if necessary
-                attention_scores = np.pad(attention_scores, 
-                                          (0, len(features) - len(attention_scores)), 
-                                          'constant')
-            elif len(attention_scores) > len(features):
-                # Truncate if necessary
-                attention_scores = attention_scores[:len(features)]
-        else:
-            # Fallback method if hook doesn't capture attention
-            logger.warning("Couldn't extract attention through hook, using uniform attention")
-            attention_scores = np.ones(len(features))
-    else:
-        # Fallback to uniform attention if model type not supported
-        logger.warning(f"Attention extraction not implemented for {CONFIG['mil_model']}, using uniform attention")
-        attention_scores = np.ones(len(features))
+            # Get attention from CLS token (first token) to patch tokens
+            # In TransMIL, index 0 corresponds to the CLS token
+            cls_attention = attention[0, 0, 1:]  # Skip the first token (CLS)
+            attention_scores = cls_attention.numpy()
+        elif len(attention.shape) == 3:  # [batch, seq_len, seq_len]
+            cls_attention = attention[0, 0, 1:]  # Skip the first token (CLS)
+            attention_scores = cls_attention.numpy()
     
-    # Normalize attention scores
+    # If no attention weights were captured by the hooks, try GradCAM
+    if attention_scores is None and CONFIG['gradcam'] and 'layer2' in activations and 'layer2' in gradients:
+        # Basic GradCAM implementation for transformer models
+        act = activations['layer2']  # [batch, seq_len, dim]
+        grad = gradients['layer2']   # [batch, seq_len, dim]
+        
+        # Skip the cls token (first token)
+        act = act[:, 1:, :]
+        grad = grad[:, 1:, :]
+        
+        # Global average pooling of gradients for each token
+        weights = grad.mean(dim=2)  # [batch, seq_len]
+        
+        # Weight activations by the gradients
+        cam = torch.sum(weights.unsqueeze(-1) * act, dim=2)  # [batch, seq_len]
+        
+        # Apply ReLU to focus on features that have a positive influence
+        cam = torch.relu(cam)
+        
+        # Normalize
+        if torch.max(cam) > 0:
+            cam = cam / torch.max(cam)
+            
+        attention_scores = cam[0].cpu().numpy()
+    
+    # If all else fails, use a simple fallback
+    if attention_scores is None:
+        logger.warning("Could not extract attention or GradCAM weights, using fallback method")
+        
+        # Use a simple heuristic: importance based on feature magnitude
+        with torch.no_grad():
+            # Compute L2 norm of each feature vector
+            features_norm = torch.norm(features_orig, dim=1)
+            attention_scores = features_norm.cpu().numpy()
+            
+            # Min-max normalize
+            if attention_scores.max() > attention_scores.min():
+                attention_scores = (attention_scores - attention_scores.min()) / (attention_scores.max() - attention_scores.min())
+            else:
+                attention_scores = np.ones_like(attention_scores)
+    
+    # Ensure we have the right number of attention scores
+    num_features = len(features)
+    if len(attention_scores) < num_features:
+        logger.warning(f"Attention scores length ({len(attention_scores)}) less than features length ({num_features}), padding")
+        attention_scores = np.pad(attention_scores, (0, num_features - len(attention_scores)), 'constant')
+    elif len(attention_scores) > num_features:
+        logger.warning(f"Attention scores length ({len(attention_scores)}) greater than features length ({num_features}), truncating")
+        attention_scores = attention_scores[:num_features]
+    
+    # Apply any post-processing to make scores more distinct visually
     if attention_scores.max() > attention_scores.min():
-        attention_scores = (attention_scores - attention_scores.min()) / (attention_scores.max() - attention_scores.min() + 1e-8)
-    else:
-        # If all values are the same, use uniform attention
-        attention_scores = np.ones(len(features))
+        # Enhance contrast with power function
+        attention_scores = np.power(attention_scores, 2)  # Square to enhance differences
+        
+        # Renormalize
+        attention_scores = (attention_scores - attention_scores.min()) / (attention_scores.max() - attention_scores.min())
     
     return attention_scores
 
@@ -573,8 +700,8 @@ def main():
     # Step 7: Run inference and get prediction
     result = predict_slide(model, features)
     
-    # Step 8: Generate attention map
-    attention_scores = get_attention_map(model, features, coords)
+    # Step 8: Generate attention map with the improved method
+    attention_scores = extract_transmil_attention(model, features)
     
     # Step 9: Create and save visualization
     viz_path, labeled_path = create_visualization(CONFIG['slide_id'], attention_scores, coords, result)
