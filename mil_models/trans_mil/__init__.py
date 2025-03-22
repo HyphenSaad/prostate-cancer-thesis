@@ -287,14 +287,25 @@ class TransMIL(BaseMILModel):
     cls_tokens = self.cls_token.expand(1, -1, -1).cuda()
     h = torch.cat((cls_tokens, h), dim=1)
 
+    # Check if attention maps should be returned
+    return_attention = kwargs.get('return_attention', False)
+    
     # ---->Translayer x1
-    h = self.layer1(h)  # [B, N, 256]
+    if return_attention and hasattr(self.layer1.attn, 'forward'):
+      h, attn1 = self.layer1.attn(self.layer1.norm(h), return_attn=True)
+      h = h + self.layer1.norm(h)
+    else:
+      h = self.layer1(h)  # [B, N, 256]
 
     # ---->PPEG
     h = self.pos_layer(h, _H, _W)  # [B, N, 256]
 
     # ---->Translayer x2
-    h = self.layer2(h)  # [B, N, 256]
+    if return_attention and hasattr(self.layer2.attn, 'forward'):
+      h, attn2 = self.layer2.attn(self.layer2.norm(h), return_attn=True)
+      h = h + self.layer2.norm(h)
+    else:
+      h = self.layer2(h)  # [B, N, 256]
 
     # ---->cls_token
     h = self.norm(h)[:, 0]
@@ -308,6 +319,15 @@ class TransMIL(BaseMILModel):
       'wsi_prob': wsi_prob,
       'wsi_label': wsi_label,
     }
+    
+    # Add attention maps to outputs if requested
+    if return_attention and 'attn1' in locals():
+      # Use the last layer's attention as representative
+      if 'attn2' in locals():
+        outputs['attention'] = attn2.detach()
+      else:
+        outputs['attention'] = attn1.detach()
+    
     return outputs
 
   def relocate(self):

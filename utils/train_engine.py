@@ -575,10 +575,11 @@ class TrainEngine:
           data = data.to(self.device)
           label = label.to(self.device)
 
+        # Request attention maps by passing return_attention=True
         if hasattr(self.model, 'wsi_predict'):
-          outputs = self.model.wsi_predict(data, **batch)
+          outputs = self.model.wsi_predict(data, return_attention=True, **batch)
         else: # use universal code to update param
-          outputs = self.model(data)
+          outputs = self.model(data, return_attention=True)
 
         logits, Y_prob, Y_hat = outputs['wsi_logits'], outputs['wsi_prob'], outputs['wsi_label']
         slide_id = slide_ids.iloc[batch_idx]
@@ -589,7 +590,24 @@ class TrainEngine:
         all_labels[batch_idx] = label.item()
         all_preds[batch_idx] = Y_hat.item()
         
-        patient_results.update({slide_id: {'slide_id': np.array(slide_id), 'prob': probs, 'label': label.item()}})
+        # Create result dictionary with basic info
+        result_dict = {
+          'slide_id': np.array(slide_id), 
+          'prob': probs, 
+          'label': label.item()
+        }
+        
+        # Extract attention maps if available
+        if 'attention' in outputs:
+            result_dict['attention'] = outputs['attention']
+        elif 'attentions' in outputs:
+            result_dict['attention'] = outputs['attentions']
+        elif 'attention_scores' in outputs:
+            result_dict['attention'] = outputs['attention_scores']
+        elif 'attn' in outputs:
+            result_dict['attention'] = outputs['attn']
+        
+        patient_results.update({slide_id: result_dict})
         error = calculate_error(Y_hat, label)
         test_error += error
         
