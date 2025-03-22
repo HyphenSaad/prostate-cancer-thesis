@@ -286,7 +286,7 @@ def create_attention_heatmap(
     patch_size,
     output_path,
     threshold=0.0,  # Set threshold to 0 to show entire heatmap
-    alpha=0.5,
+    alpha=0.7,  # Increased from 0.5 to 0.7 for stronger colors
     cmap='coolwarm'
 ):
     """Create and save attention heatmap overlay on the entire WSI"""
@@ -348,10 +348,13 @@ def create_attention_heatmap(
         scaled_patch_size = int(patch_size * scale[0])
         logger.info(f"Scaled patch size: {scaled_patch_size}")
         
-        # Normalize attention scores between 0-1 for visualization
-        min_score = np.min(attention_scores)
-        max_score = np.max(attention_scores)
-        norm_attention_scores = (attention_scores - min_score) / (max_score - min_score + 1e-8)
+        # Store original attention score range for logging
+        orig_min = np.min(attention_scores)
+        orig_max = np.max(attention_scores)
+        logger.info(f"Original attention score range: {orig_min:.4f} to {orig_max:.4f}")
+        
+        # Normalize attention scores between 0-1 for visualization while preserving relative values
+        norm_attention_scores = (attention_scores - orig_min) / (orig_max - orig_min + 1e-8)
         
         # Create empty heatmap of the same size as the slide
         heatmap = np.zeros((region_size[1], region_size[0]), dtype=np.float32)
@@ -359,16 +362,22 @@ def create_attention_heatmap(
         # First pass - fill points with values
         logger.info("Creating base heatmap...")
         for i, (coord, score) in enumerate(zip(scaled_coords, norm_attention_scores)):
-            # Get the patch center coordinates
-            x = min(region_size[0]-1, max(0, coord[0] + scaled_patch_size // 2))
-            y = min(region_size[1]-1, max(0, coord[1] + scaled_patch_size // 2))
+            # Fill the entire patch area with the attention score
+            x_start = max(0, coord[0])
+            y_start = max(0, coord[1])
+            x_end = min(region_size[0], coord[0] + scaled_patch_size)
+            y_end = min(region_size[1], coord[1] + scaled_patch_size)
             
-            # Set the score at the center of the patch
-            heatmap[y, x] = score
+            # Update the heatmap with maximum attention value at each point
+            # This ensures we're keeping the actual attention values from the model
+            patch_area = np.full((y_end - y_start, x_end - x_start), score)
+            heatmap[y_start:y_end, x_start:x_end] = np.maximum(
+                heatmap[y_start:y_end, x_start:x_end], 
+                patch_area
+            )
         
-        # Apply a large Gaussian blur to create a continuous gradient across the entire slide
-        # Use a large sigma proportional to the scaled patch size
-        sigma = scaled_patch_size * 2.0  # Increase this to make the heatmap more smooth and spread out
+        # Apply a mild Gaussian blur - reduced blur effect
+        sigma = scaled_patch_size * 0.5  # Reduced from 2.0 to 0.5
         logger.info(f"Applying Gaussian blur with sigma={sigma}...")
         heatmap = gaussian_filter(heatmap, sigma=sigma)
         
@@ -384,11 +393,19 @@ def create_attention_heatmap(
         heatmap_rgba = np.zeros((region_size[1], region_size[0], 4), dtype=np.float32)
         
         # Apply colormap to the entire heatmap
+        # To make the colors stronger, we'll apply a mild contrast enhancement
+        # by raising the heatmap values to a power < 1 (emphasizes differences)
+        contrast_enhanced_heatmap = np.power(heatmap, 0.7)  # Enhance contrast
+        
         # For every pixel in the image...
         for y in range(region_size[1]):
             for x in range(region_size[0]):
                 # Get the normalized attention value
-                value = heatmap[y, x]
+                value = contrast_enhanced_heatmap[y, x]
+                
+                # Skip very low values to avoid cluttering the image
+                if value < threshold:
+                    continue
                 
                 # Apply colormap
                 color = cmap_func(value)
@@ -396,10 +413,9 @@ def create_attention_heatmap(
                 # Store color values
                 heatmap_rgba[y, x, :3] = color[:3]
                 
-                # Set alpha proportional to attention value
-                # Adjust minimum alpha to ensure even low attention areas are slightly visible
-                min_alpha = 0.05  # Minimum alpha for very low attention areas
-                heatmap_rgba[y, x, 3] = min_alpha + value * (alpha - min_alpha)
+                # Set alpha proportional to attention value - making it stronger
+                # No minimum alpha, so areas with no attention are fully transparent
+                heatmap_rgba[y, x, 3] = value * alpha
         
         # Convert to uint8 for PIL
         heatmap_rgba = (heatmap_rgba * 255).astype(np.uint8)
@@ -433,7 +449,8 @@ def create_attention_heatmap(
         # Convert heatmap to RGB heatmap for better visualization
         plt.figure(figsize=(10, 10))
         plt.imshow(heatmap, cmap=cmap)
-        plt.colorbar()
+        plt.colorbar(label='Normalized Attention Score')
+        plt.title(f'Attention Map (Original range: {orig_min:.4f} to {orig_max:.4f})')
         plt.axis('off')
         plt.savefig(heatmap_only_path, bbox_inches='tight', pad_inches=0)
         plt.close()
