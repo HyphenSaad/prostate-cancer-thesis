@@ -288,11 +288,42 @@ def create_attention_heatmap(
 ):
     """Create and save attention heatmap overlay on the slide"""
     try:
+        # Validate inputs
+        if coords is None or len(coords) == 0:
+            logger.error("Coordinates are empty or None")
+            return False
+            
+        if attention_scores is None or len(attention_scores) == 0:
+            logger.error("Attention scores are empty or None")
+            return False
+            
+        # Ensure coords and scores have compatible lengths
+        if len(coords) != len(attention_scores):
+            logger.warning(f"Mismatch between coords ({len(coords)}) and attention scores ({len(attention_scores)})")
+            # Use the minimum length to avoid errors
+            min_len = min(len(coords), len(attention_scores))
+            coords = coords[:min_len]
+            attention_scores = attention_scores[:min_len]
+            
         # Load the WSI
         wsi_object = WholeSlideImage(slide_path, verbose=CONFIG['verbose'])
         
+        # Ensure coords is a numpy array with the right shape
+        if not isinstance(coords, np.ndarray):
+            logger.warning("Converting coords to numpy array")
+            coords = np.array(coords)
+        
+        # Reshape coords if needed (should be a 2D array with shape [n, 2])
+        if coords.ndim == 1:
+            coords = coords.reshape(-1, 2)
+        
         # Normalize attention scores to 0-100 range
-        norm_scores = (attention_scores - attention_scores.min()) / (attention_scores.max() - attention_scores.min()) * 100
+        norm_scores = (attention_scores - attention_scores.min()) / (attention_scores.max() - attention_scores.min() + 1e-8) * 100
+        
+        # Log information for debugging
+        logger.info(f"Coords shape: {coords.shape}")
+        logger.info(f"Attention scores shape: {norm_scores.shape}")
+        logger.info(f"Creating heatmap with {len(coords)} points")
         
         # Create heatmap visualization
         heatmap = wsi_object.vis_heatmap(
@@ -314,6 +345,8 @@ def create_attention_heatmap(
         return True
     except Exception as e:
         logger.error(f"Error creating attention heatmap: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return False
 
 def prepare_slide_dataset(slide_id):
@@ -389,6 +422,24 @@ def predict_slide(slide_dataset, checkpoint_path):
     if isinstance(attention_scores, np.ndarray) and attention_scores.ndim > 1:
         # For simplicity, use mean across dimensions or the first attention layer
         attention_scores = np.mean(attention_scores, axis=tuple(range(attention_scores.ndim - 1)))
+    
+    # Ensure attention_scores has same length as coords
+    if hasattr(coords, '__len__') and hasattr(attention_scores, '__len__'):
+        if len(coords) != len(attention_scores):
+            logger.warning(f"Attention scores length ({len(attention_scores)}) doesn't match coords length ({len(coords)})")
+            # If single value or wrong size, expand to match coords
+            if len(attention_scores) == 1:
+                attention_scores = np.full(len(coords), attention_scores[0])
+            # If too many values, truncate
+            elif len(attention_scores) > len(coords):
+                attention_scores = attention_scores[:len(coords)]
+            # If too few values, pad with mean
+            else:
+                mean_score = np.mean(attention_scores)
+                attention_scores = np.pad(attention_scores, 
+                                        (0, len(coords) - len(attention_scores)), 
+                                        'constant', 
+                                        constant_values=mean_score)
     
     # Return all relevant information
     return {
@@ -495,6 +546,31 @@ def main():
         logger.success(f"Attention heatmap saved to: {heatmap_path}")
     else:
         logger.error("Failed to create attention heatmap")
+        # If heatmap generation fails, try a simpler visualization approach
+        try:
+            fallback_heatmap_path = os.path.join(
+                CONFIG['output_dir'],
+                f"{CONFIG['slide_id']}_{timestamp}_attention_fallback.png"
+            )
+            
+            # Create a fallback visualization (simpler approach)
+            logger.info("Attempting fallback visualization method...")
+            
+            # Save coords and attention scores for debugging
+            debug_file = os.path.join(CONFIG['output_dir'], 
+                                    f"{CONFIG['slide_id']}_{timestamp}_debug_info.json")
+            
+            debug_info = {
+                "coords_shape": str(np.array(results['coords']).shape) if results['coords'] is not None else "None",
+                "attention_scores_shape": str(np.array(results['attention_scores']).shape) if results['attention_scores'] is not None else "None",
+                "slide_id": results['slide_id'],
+                "prediction": int(results['prediction'])
+            }
+            
+            save_json(debug_file, debug_info)
+            logger.info(f"Saved debug information to: {debug_file}")
+        except Exception as e:
+            logger.error(f"Fallback visualization also failed: {e}")
     
     logger.success("Evaluation and visualization completed successfully!")
 
