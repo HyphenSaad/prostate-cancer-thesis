@@ -238,7 +238,7 @@ def create_attention_heatmap(
     alpha=0.7,
     cmap='jet'
 ):
-    """Create and save attention heatmap overlay on the entire WSI using model attention maps"""
+    """Create and save attention heatmap overlay on the WSI showing individual patches without blurring"""
     try:
         # Validate inputs
         if coords is None or len(coords) == 0 or attention_scores is None or len(attention_scores) == 0:
@@ -274,34 +274,27 @@ def create_attention_heatmap(
         scaled_coords = (coords * np.array(scale)).astype(np.int32)
         scaled_patch_size = int(patch_size * scale[0])
         
-        # Check if attention_scores is multi-dimensional (contains multiple attention maps)
-        multi_attention = False
-        attention_layers = []
-        original_attention_shape = np.array(attention_scores).shape
+        # Normalize attention scores for visualization
+        min_score = np.min(attention_scores)
+        max_score = np.max(attention_scores)
+        norm_attention_scores = (attention_scores - min_score) / (max_score - min_score + 1e-8)
         
-        # Handle multi-dimensional attention scores (from different layers/heads)
-        if isinstance(attention_scores, np.ndarray) and attention_scores.ndim > 1:
-            multi_attention = True
-            # Store the original multi-dimensional structure
-            if attention_scores.ndim == 2:
-                # Single layer with multiple heads
-                attention_layers = [attention_scores]
-            else:
-                # Multiple layers
-                for layer_idx in range(attention_scores.shape[0]):
-                    attention_layers.append(attention_scores[layer_idx])
-            
-            # For the main heatmap, use the mean across all dimensions
-            attention_scores = np.mean(attention_scores, axis=tuple(range(attention_scores.ndim - 1)))
-            logger.info(f"Using mean of {len(attention_layers)} attention layers/heads for main heatmap")
+        logger.info(f"Original attention score range: {min_score:.4f} to {max_score:.4f}")
         
-        # Create empty heatmap canvas
-        heatmap = np.zeros((region_size[1], region_size[0]), dtype=np.float32)
+        # Get colormap function
+        cmap_func = plt.get_cmap(cmap)
         
-        # Fill heatmap with attention values - fill areas based on patch size
-        logger.info(f"Creating base heatmap from {len(coords)} patches...")
-        for i, (coord, score) in enumerate(zip(scaled_coords, attention_scores)):
-            # Get the full patch area
+        # Create a copy of the WSI image for overlay
+        overlay_img = wsi_img.copy()
+        
+        # Apply attention overlay for each patch
+        logger.info(f"Creating overlay for {len(coords)} patches...")
+        for i, (coord, score) in enumerate(zip(scaled_coords, norm_attention_scores)):
+            # Skip if score is below threshold
+            if score < threshold:
+                continue
+                
+            # Get patch boundaries
             x_start = max(0, coord[0])
             y_start = max(0, coord[1])
             x_end = min(region_size[0], coord[0] + scaled_patch_size)
@@ -310,75 +303,56 @@ def create_attention_heatmap(
             if x_end <= x_start or y_end <= y_start:
                 continue
                 
-            # Fill the entire patch area with the attention score
-            heatmap[y_start:y_end, x_start:x_end] = score
-        
-        # Apply a stronger Gaussian blur for more smoothness
-        # Increase sigma to make it smoother
-        sigma = scaled_patch_size   # Using the full patch size for maximum smoothness
-        logger.info(f"Applying strong Gaussian blur with sigma={sigma:.2f}")
-        heatmap = gaussian_filter(heatmap, sigma=sigma)
-        
-        # Normalize for visualization
-        if np.max(heatmap) > 0:
-            heatmap = heatmap / np.max(heatmap)
+            # Get color for this attention score
+            color = np.array(cmap_func(score)[:3]) * 255
             
-        # Apply threshold if specified
-        if threshold > 0:
-            heatmap[heatmap < threshold] = 0
+            # Create colored patch with transparency based on attention score
+            patch_overlay = np.zeros((y_end-y_start, x_end-x_start, 3), dtype=np.uint8)
+            patch_overlay[:,:] = color
+            
+            # Blend patch with original image based on attention value
+            patch_alpha = score * alpha
+            original_patch = overlay_img[y_start:y_end, x_start:x_end]
+            blended_patch = cv2.addWeighted(
+                patch_overlay, patch_alpha, 
+                original_patch, 1 - patch_alpha, 
+                0
+            )
+            
+            # Place blended patch back into the image
+            overlay_img[y_start:y_end, x_start:x_end] = blended_patch
         
         # Save original WSI
         orig_path = os.path.join(os.path.dirname(output_path), f"{os.path.basename(output_path).split('_')[0]}_original.png")
         Image.fromarray(wsi_img).save(orig_path)
         logger.info(f"Saved original WSI to: {orig_path}")
         
-        # Create and save the main heatmap
-        save_heatmap_overlay(wsi_img, heatmap, output_path, cmap, alpha)
+        # Save overlay image
+        overlay_path = output_path
+        Image.fromarray(overlay_img).save(overlay_path)
+        logger.info(f"Saved attention overlay to: {overlay_path}")
         
-        # If we have multiple attention layers, create separate heatmaps for each
-        if multi_attention and attention_layers:
-            logger.info(f"Creating separate heatmaps for {len(attention_layers)} attention layers/heads")
-            for layer_idx, layer_attention in enumerate(attention_layers):
-                if layer_idx >= 3:  # Limit to first 3 layers to avoid too many files
-                    break
-                    
-                # Create a layer-specific heatmap
-                layer_heatmap = np.zeros((region_size[1], region_size[0]), dtype=np.float32)
+        # Create and save a pure attention heatmap (just patches, no WSI background)
+        heatmap_img = np.zeros_like(wsi_img)
+        
+        for i, (coord, score) in enumerate(zip(scaled_coords, norm_attention_scores)):
+            if score < threshold:
+                continue
                 
-                # If layer_attention is 2D, take the mean across 2nd dimension (heads)
-                if layer_attention.ndim > 1:
-                    layer_scores = np.mean(layer_attention, axis=tuple(range(layer_attention.ndim - 1)))
-                else:
-                    layer_scores = layer_attention
+            x_start = max(0, coord[0])
+            y_start = max(0, coord[1])
+            x_end = min(region_size[0], coord[0] + scaled_patch_size)
+            y_end = min(region_size[1], coord[1] + scaled_patch_size)
+            
+            if x_end <= x_start or y_end <= y_start:
+                continue
                 
-                # Fill the layer heatmap
-                for i, (coord, score) in enumerate(zip(scaled_coords, layer_scores)):
-                    x_start = max(0, coord[0])
-                    y_start = max(0, coord[1])
-                    x_end = min(region_size[0], coord[0] + scaled_patch_size)
-                    y_end = min(region_size[1], coord[1] + scaled_patch_size)
-                    
-                    if x_end <= x_start or y_end <= y_start:
-                        continue
-                        
-                    layer_heatmap[y_start:y_end, x_start:x_end] = score
-                
-                # Apply strong Gaussian blur
-                layer_heatmap = gaussian_filter(layer_heatmap, sigma=sigma)
-                
-                # Normalize
-                if np.max(layer_heatmap) > 0:
-                    layer_heatmap = layer_heatmap / np.max(layer_heatmap)
-                
-                # Create layer-specific output path
-                layer_output_path = os.path.join(
-                    os.path.dirname(output_path),
-                    f"{os.path.basename(output_path).split('.')[0]}_layer{layer_idx+1}.png"
-                )
-                
-                # Save layer heatmap
-                save_heatmap_overlay(wsi_img, layer_heatmap, layer_output_path, cmap, alpha)
-                logger.info(f"Saved layer {layer_idx+1} attention heatmap to: {layer_output_path}")
+            color = np.array(cmap_func(score)[:3]) * 255
+            heatmap_img[y_start:y_end, x_start:x_end] = color
+        
+        heatmap_path = os.path.join(os.path.dirname(output_path), f"{os.path.basename(output_path).split('.')[0]}_heatmap.png")
+        Image.fromarray(heatmap_img).save(heatmap_path)
+        logger.info(f"Saved heatmap-only version to: {heatmap_path}")
         
         return True
     except Exception as e:
@@ -684,7 +658,7 @@ def main():
         cmap=CONFIG['color_map']
     )
     
-    if success:
+    if (success):
         logger.success(f"Attention heatmap saved to: {heatmap_path}")
     else:
         logger.error("Failed to create attention heatmap")
