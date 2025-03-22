@@ -287,20 +287,16 @@ def create_attention_heatmap(
     output_path,
     threshold=0.0,
     alpha=0.7,
-    cmap='jet'  # Changed to 'jet' for better visualization similar to GradCAM
+    cmap='jet'
 ):
-    """Create and save attention heatmap overlay on the entire WSI"""
+    """Create and save attention heatmap overlay on the entire WSI using model attention maps"""
     try:
         # Validate inputs
-        if coords is None or len(coords) == 0:
-            logger.error("Coordinates are empty or None")
+        if coords is None or len(coords) == 0 or attention_scores is None or len(attention_scores) == 0:
+            logger.error("Coordinates or attention scores are empty")
             return False
             
-        if attention_scores is None or len(attention_scores) == 0:
-            logger.error("Attention scores are empty or None")
-            return False
-            
-        # Ensure coords and scores have compatible lengths
+        # Match lengths if needed
         if len(coords) != len(attention_scores):
             logger.warning(f"Mismatch between coords ({len(coords)}) and attention scores ({len(attention_scores)})")
             min_len = min(len(coords), len(attention_scores))
@@ -308,161 +304,86 @@ def create_attention_heatmap(
             attention_scores = attention_scores[:min_len]
             
         # Load the WSI
-        logger.info(f"Opening slide: {slide_path}")
         wsi_object = WholeSlideImage(slide_path, verbose=CONFIG['verbose'])
         
-        # Ensure coords is a numpy array with the right shape
+        # Convert coords to numpy array if needed
         coords = np.array(coords) if not isinstance(coords, np.ndarray) else coords
         if coords.ndim == 1:
             coords = coords.reshape(-1, 2)
         
-        # Store original attention score statistics for reference
-        orig_min = np.min(attention_scores)
-        orig_max = np.max(attention_scores)
-        orig_mean = np.mean(attention_scores)
-        orig_std = np.std(attention_scores)
-        logger.info(f"Attention scores range: {orig_min:.4f} to {orig_max:.4f}, mean: {orig_mean:.4f}, std: {orig_std:.4f}")
-        
-        # Determine the best visualization level for the whole slide
+        # Get WSI visualization level
         vis_level = wsi_object.wsi.get_best_level_for_downsample(32)
         logger.info(f"Using visualization level: {vis_level}")
         
-        # Get the dimensions and downsampling factor at the visualization level
+        # Get dimensions and read the WSI
         region_size = wsi_object.level_dim[vis_level]
-        width, height = region_size
-        logger.info(f"WSI dimensions at level {vis_level}: {width}x{height}")
-        
-        # Read the WSI image at the visualization level
-        logger.info("Reading the whole slide image...")
         wsi_img = np.array(wsi_object.wsi.read_region((0,0), vis_level, region_size).convert("RGB"))
         
-        # Scale coordinates to the visualization level
+        # Scale coords to this level
         downsample = wsi_object.level_downsamples[vis_level]
         scale = [1/downsample[0], 1/downsample[1]]
-        scaled_coords = coords * np.array(scale)
-        scaled_coords = scaled_coords.astype(np.int32)
-        
-        # Scale patch size to the visualization level
+        scaled_coords = (coords * np.array(scale)).astype(np.int32)
         scaled_patch_size = int(patch_size * scale[0])
-        logger.info(f"Working with scaled patch size: {scaled_patch_size} at level {vis_level}")
         
-        # Normalize attention scores to [0,1] while preserving relative values
-        norm_attention_scores = (attention_scores - orig_min) / (orig_max - orig_min + 1e-8)
+        # Create empty heatmap canvas
+        heatmap = np.zeros((region_size[1], region_size[0]), dtype=np.float32)
         
-        # Apply adaptive contrast enhancement based on distribution
-        # Boost lower values more for better visualization
-        enhanced_scores = np.power(norm_attention_scores, 0.5)  # Square root for more visibility
-        
-        # Create empty heatmap of the same size as the slide
-        heatmap = np.zeros((height, width), dtype=np.float32)
-        
-        # Create a coverage map to track where patches were placed
-        coverage = np.zeros((height, width), dtype=np.uint8)
-        
-        # Process each patch with progress tracking
-        logger.info(f"Creating heatmap from {len(coords)} patches...")
-        for i, (coord, score) in enumerate(zip(scaled_coords, enhanced_scores)):
-            # Fill the patch area with the attention score
-            x_start = max(0, coord[0])
-            y_start = max(0, coord[1])
-            x_end = min(width, coord[0] + scaled_patch_size)
-            y_end = min(height, coord[1] + scaled_patch_size)
+        # Fill heatmap with attention values - each patch gets its attention score
+        for i, (coord, score) in enumerate(zip(scaled_coords, attention_scores)):
+            x, y = coord
             
-            # Skip if the patch is outside the image bounds
-            if x_start >= width or y_start >= height or x_end <= 0 or y_end <= 0:
+            # Skip if coordinates are outside the image
+            if (x < 0 or y < 0 or 
+                x >= region_size[0] or y >= region_size[1]):
                 continue
-                
-            # Fill the entire patch area with the attention score
-            patch_area = np.full((y_end - y_start, x_end - x_start), score)
             
-            # Use maximum attention score if patches overlap
-            heatmap[y_start:y_end, x_start:x_end] = np.maximum(
-                heatmap[y_start:y_end, x_start:x_end], 
-                patch_area
-            )
+            # Get valid patch area (handle edge cases)
+            x_start = max(0, x)
+            y_start = max(0, y)
+            x_end = min(region_size[0], x + scaled_patch_size)
+            y_end = min(region_size[1], y + scaled_patch_size)
             
-            # Mark this area as covered
-            coverage[y_start:y_end, x_start:x_end] = 1
-            
-            # Print progress every 10% of patches
-            if (i + 1) % max(1, len(coords) // 10) == 0:
-                logger.info(f"Processed {i+1}/{len(coords)} patches ({(i+1)/len(coords)*100:.1f}%)")
+            # Fill entire patch area with attention score
+            heatmap[y_start:y_end, x_start:x_end] = score
         
-        # Calculate level-adaptive Gaussian smoothing sigma
-        # Higher resolution = larger sigma needed for consistent appearance
-        base_sigma = 2.0
-        level_adaptive_sigma = base_sigma * (scaled_patch_size / 64)
-        logger.info(f"Applying Gaussian blur with adaptive sigma={level_adaptive_sigma:.2f}")
+        # Apply Gaussian blur for smoothness - use patch size to determine sigma
+        sigma = scaled_patch_size / 3  # Smaller divisor = less blur
+        logger.info(f"Applying Gaussian blur with sigma={sigma:.2f}")
+        heatmap = gaussian_filter(heatmap, sigma=sigma)
         
-        # Apply Gaussian blur for smoothness
-        heatmap = gaussian_filter(heatmap, sigma=level_adaptive_sigma)
-        
-        # Re-normalize after smoothing to use the full range 0-1
+        # Normalize after blur for visualization
         if np.max(heatmap) > 0:
             heatmap = heatmap / np.max(heatmap)
         
-        # Apply threshold if specified
+        # Apply threshold if requested
         if threshold > 0:
             heatmap[heatmap < threshold] = 0
         
-        # Save the original WSI image
+        # Save original WSI
         orig_path = os.path.join(os.path.dirname(output_path), f"{os.path.basename(output_path).split('_')[0]}_original.png")
         Image.fromarray(wsi_img).save(orig_path)
-        logger.info(f"Saved original WSI to: {orig_path}")
         
-        # Save the heatmap-only version using matplotlib for better visualization
-        heatmap_path = os.path.join(os.path.dirname(output_path), f"{os.path.basename(output_path).split('.')[0]}_heatmap.png")
-        plt.figure(figsize=(16, 12))
-        plt.imshow(heatmap, cmap=cmap)
-        plt.colorbar(label='Normalized Attention Score')
-        plt.title(f'Attention Map (Original range: {orig_min:.4f} to {orig_max:.4f})')
-        plt.axis('off')
-        plt.tight_layout()
-        plt.savefig(heatmap_path, bbox_inches='tight', dpi=300)
-        plt.close()
-        logger.info(f"Saved heatmap-only version to: {heatmap_path}")
-        
-        # Create overlay using cv2 methods for better color representation
-        logger.info("Creating attention overlay with cv2...")
-        
-        # Convert heatmap to uint8 and apply colormap
+        # Apply colormap for visualization
         heatmap_uint8 = np.uint8(255 * heatmap)
         heatmap_colored = cv2.applyColorMap(heatmap_uint8, cv2.COLORMAP_JET)
         heatmap_colored = cv2.cvtColor(heatmap_colored, cv2.COLOR_BGR2RGB)
         
-        # Create overlay with alpha blending
+        # Create overlay
         overlay = cv2.addWeighted(heatmap_colored, alpha, wsi_img, 1 - alpha, 0)
         
-        # Save the blended overlay
+        # Save results
         Image.fromarray(overlay).save(output_path)
-        logger.success(f"Saved attention overlay to: {output_path}")
+        logger.success(f"Attention heatmap saved to: {output_path}")
         
-        # Create a zoomed version focusing on areas with attention (tissue regions)
-        try:
-            # Find the bounding box of the tissue (non-zero attention areas with padding)
-            non_zero_y, non_zero_x = np.where(heatmap > 0.01)
-            
-            if len(non_zero_y) > 0 and len(non_zero_x) > 0:
-                min_y, max_y = np.min(non_zero_y), np.max(non_zero_y)
-                min_x, max_x = np.min(non_zero_x), np.max(non_zero_x)
-                
-                # Add padding around the region of interest
-                padding = scaled_patch_size * 2
-                min_x = max(0, min_x - padding)
-                min_y = max(0, min_y - padding)
-                max_x = min(width, max_x + padding)
-                max_y = min(height, max_y + padding)
-                
-                # Extract the zoomed region
-                zoom_img = overlay[min_y:max_y, min_x:max_x]
-                
-                # Save the zoomed overlay
-                zoom_path = os.path.join(os.path.dirname(output_path), 
-                                        f"{os.path.basename(output_path).split('.')[0]}_zoomed.png")
-                Image.fromarray(zoom_img).save(zoom_path)
-                logger.info(f"Saved zoomed view to: {zoom_path}")
-        except Exception as e:
-            logger.warning(f"Couldn't create zoomed view: {e}")
+        # Save heatmap-only version
+        heatmap_path = os.path.join(os.path.dirname(output_path), f"{os.path.basename(output_path).split('.')[0]}_heatmap.png")
+        plt.figure(figsize=(10, 8))
+        plt.imshow(heatmap, cmap=cmap)
+        plt.colorbar(label='Attention Score')
+        plt.axis('off')
+        plt.tight_layout()
+        plt.savefig(heatmap_path, bbox_inches='tight')
+        plt.close()
         
         return True
     except Exception as e:
