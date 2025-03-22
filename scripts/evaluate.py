@@ -4,6 +4,7 @@ warnings.filterwarnings('ignore')
 import os 
 import sys
 import time
+import torch
 import argparse
 import matplotlib.pyplot as plt
 from sklearn.metrics import ConfusionMatrixDisplay
@@ -247,12 +248,42 @@ def main():
   )
 
   logger.info(f"Evaluating model from checkpoint: {CONFIG['checkpoint_path']}")
-  _, test_error, test_auc, acc_logger, df, test_f1, test_metrics = train_engine.eval_model(CONFIG['checkpoint_path'])
+  patient_results, test_error, test_auc, acc_logger, df, test_f1, test_metrics = train_engine.eval_model(CONFIG['checkpoint_path'])
   
   if CONFIG['save_predictions']:
     predictions_path = os.path.join(model_output_dir, "predictions.csv")
     logger.info(f"Saving predictions to {predictions_path}")
     df.to_csv(predictions_path, index=False)
+  
+  # Save attention maps if requested and available
+  if CONFIG['save_attention_maps']:
+    attention_dir = os.path.join(model_output_dir, "attention_maps")
+    os.makedirs(attention_dir, exist_ok=True)
+    logger.info(f"Saving attention maps to {attention_dir}")
+    
+    attention_saved = False
+    for slide_id, result in patient_results.items():
+      if 'attention' in result:
+        attention_map = result['attention']
+        attention_path = os.path.join(attention_dir, f"{slide_id}_attention.png")
+        
+        # If attention is a torch tensor, convert to numpy
+        if isinstance(attention_map, torch.Tensor):
+          attention_map = attention_map.cpu().numpy()
+        
+        # Plot and save attention map
+        plt.figure(figsize=(10, 8))
+        plt.imshow(attention_map, cmap='hot', interpolation='nearest')
+        plt.colorbar(label='Attention Weight')
+        plt.title(f'Attention Map for {slide_id}')
+        plt.tight_layout()
+        plt.savefig(attention_path)
+        plt.close()
+        attention_saved = True
+    
+    if not attention_saved:
+      logger.warning("No attention maps found in model output. Make sure the model produces attention weights.")
+      logger.warning("For TransMIL and ABMIL models, this should be available in the model output.")
   
   metrics_path = os.path.join(model_output_dir, "metrics.json")
   metrics_to_save = {
