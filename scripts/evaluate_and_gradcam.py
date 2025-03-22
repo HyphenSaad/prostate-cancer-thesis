@@ -325,19 +325,58 @@ def create_attention_heatmap(
         logger.info(f"Attention scores shape: {norm_scores.shape}")
         logger.info(f"Creating heatmap with {len(coords)} points")
         
-        # Create heatmap visualization
-        heatmap = wsi_object.vis_heatmap(
-            scores=norm_scores,
-            coords=coords,
-            vis_level=-1,  # Auto-select best level
-            patch_size=(patch_size, patch_size),
-            blank_canvas=False,
-            alpha=alpha,
-            binarize=threshold > 0,
-            thresh=threshold,
-            overlap=0.0,
-            cmap=cmap
-        )
+        # Perform tissue segmentation first (this is required for vis_heatmap to work)
+        try:
+            logger.info("Performing tissue segmentation before creating heatmap...")
+            # Use standard segmentation parameters
+            seg_params = {
+                'seg_level': -1,  # Auto-select best level
+                'sthresh': 8,
+                'mthresh': 7,
+                'close': 4,
+                'use_otsu': False,
+                'keep_ids': [],
+                'exclude_ids': []
+            }
+            filter_params = {
+                'a_t': 100,
+                'a_h': 16,
+                'max_n_holes': 8
+            }
+            wsi_object.segment_tissue(**seg_params, filter_params=filter_params)
+            
+            # Create heatmap visualization
+            logger.info("Creating heatmap visualization...")
+            heatmap = wsi_object.vis_heatmap(
+                scores=norm_scores,
+                coords=coords,
+                vis_level=-1,  # Auto-select best level
+                patch_size=(patch_size, patch_size),
+                blank_canvas=False,
+                alpha=alpha,
+                binarize=threshold > 0,
+                thresh=threshold,
+                overlap=0.0,
+                cmap=cmap,
+                use_holes=False,  # Don't use holes for simplicity
+                segment=True      # Use tissue segmentation
+            )
+        except Exception as seg_error:
+            # If segmentation fails, try with blank canvas instead
+            logger.warning(f"Tissue segmentation failed: {seg_error}. Trying with blank canvas.")
+            heatmap = wsi_object.vis_heatmap(
+                scores=norm_scores,
+                coords=coords,
+                vis_level=-1,
+                patch_size=(patch_size, patch_size),
+                blank_canvas=True,  # Use blank canvas as fallback
+                alpha=1.0,          # Full opacity since we're using blank canvas
+                binarize=threshold > 0,
+                thresh=threshold,
+                overlap=0.0,
+                cmap=cmap,
+                segment=False       # Skip segmentation
+            )
         
         # Save the heatmap
         heatmap.save(output_path)
@@ -546,17 +585,44 @@ def main():
         logger.success(f"Attention heatmap saved to: {heatmap_path}")
     else:
         logger.error("Failed to create attention heatmap")
-        # If heatmap generation fails, try a simpler visualization approach
+        # If heatmap generation fails, create a simple scatter plot as fallback
         try:
             fallback_heatmap_path = os.path.join(
                 CONFIG['output_dir'],
                 f"{CONFIG['slide_id']}_{timestamp}_attention_fallback.png"
             )
             
-            # Create a fallback visualization (simpler approach)
-            logger.info("Attempting fallback visualization method...")
+            logger.info("Creating fallback visualization (scatter plot)...")
             
-            # Save coords and attention scores for debugging
+            # Create a simple scatter plot of the attention points
+            plt.figure(figsize=(10, 10))
+            coords = results['coords']
+            attention_scores = results['attention_scores']
+            
+            # Normalize scores for coloring
+            norm_scores = (attention_scores - attention_scores.min()) 
+            norm_scores = norm_scores / (norm_scores.max() + 1e-8)
+            
+            scatter = plt.scatter(
+                coords[:, 0], 
+                coords[:, 1], 
+                c=norm_scores, 
+                cmap=CONFIG['color_map'],
+                alpha=0.7, 
+                s=50
+            )
+            plt.colorbar(scatter, label="Attention Score")
+            plt.title(f"Attention Map for Slide {CONFIG['slide_id']}")
+            plt.xlabel("X Coordinate")
+            plt.ylabel("Y Coordinate")
+            plt.gca().invert_yaxis()  # WSI coordinates have origin at top-left
+            plt.tight_layout()
+            plt.savefig(fallback_heatmap_path, dpi=300)
+            plt.close()
+            
+            logger.success(f"Fallback visualization saved to: {fallback_heatmap_path}")
+            
+            # Save debug information
             debug_file = os.path.join(CONFIG['output_dir'], 
                                     f"{CONFIG['slide_id']}_{timestamp}_debug_info.json")
             
