@@ -1,3 +1,4 @@
+import json
 import pickle
 import h5py
 
@@ -51,3 +52,10 @@ def save_hdf5(
 
   file.close()
   return output_path
+
+def save_json(
+  output_path,
+  asset_dict
+):
+  with open(output_path, 'w') as f:
+    json.dump(asset_dict, f)
