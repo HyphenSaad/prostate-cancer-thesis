@@ -169,10 +169,10 @@ def load_arguments():
   CONFIG['directories']['features_pt_directory'] = os.path.join(output_base_dir, 'extract_features', 'pt_files')
 
 def main():
-  logger.draw_header("Train MIL Models")
+  logger.draw_header("Train MIL Model")
   load_arguments()
   
-  logger.info("Training MIL models...")
+  logger.info("Training MIL model...")
   start_time = time.time()
 
   logger.info("Creating Directories...")
@@ -250,14 +250,12 @@ def main():
     all_test_kappa.append(test_metrics['cohens_kappa'])
     all_val_kappa.append(val_metrics['cohens_kappa'])
 
-    # Save detailed metrics for this fold
     fold_metrics = {
-        'test': test_metrics,
-        'val': val_metrics
+      'test': test_metrics,
+      'val': val_metrics
     }
     save_pkl(os.path.join(CONFIG['directories']['save_base_directory'], 'split_{}_metrics.pkl'.format(fold)), fold_metrics)
     
-    # Save regular results
     filename = os.path.join(CONFIG['directories']['save_base_directory'], 'split_{}_results.pkl'.format(fold))
     save_pkl(filename, results)
     
@@ -297,7 +295,6 @@ def main():
   logger.info("Training completed!")
   logger.info("Total folds processed: {}", len(folds))
   
-  # Print comprehensive results summary
   logger.info("===== Performance Metrics Summary =====")
   logger.info("--- Test Metrics ---")
   logger.info("Average Accuracy: {:.4f}", np.mean(all_test_acc))

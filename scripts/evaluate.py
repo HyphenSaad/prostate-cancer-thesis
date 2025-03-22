@@ -3,14 +3,10 @@ warnings.filterwarnings('ignore')
 
 import os 
 import sys
-import pandas as pd
-import numpy as np
 import time
 import argparse
-import torch
-import json
 import matplotlib.pyplot as plt
-from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+from sklearn.metrics import ConfusionMatrixDisplay
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
@@ -35,10 +31,10 @@ CONFIG = {
   'patch_size': 512,
   'in_dim': 1024,
   'dataset_info_csv': os.path.join(DATASET_BASE_DIRECTORY, DATASET_INFO_FILE_NAME),
-  'checkpoint_path': None,  # Will be set based on other params if not provided
+  'checkpoint_path': None, 
   'verbose': False,
   'save_predictions': True,
-  'save_attention_maps': False,  # Optional: Save attention maps for interpretability
+  'save_attention_maps': False,
   'directories': {
     'results_directory': os.path.join(OUTPUT_BASE_DIRECTORY, 'evaluation'),
     'train_directory': os.path.join(OUTPUT_BASE_DIRECTORY, 'train'),
@@ -195,17 +191,15 @@ def plot_confusion_matrix(cm, classes, save_path):
   plt.close()
 
 def main():
-  logger.draw_header("Evaluate MIL Models")
+  logger.draw_header("Evaluate MIL Model")
   load_arguments()
   
   logger.info("Evaluating MIL model...")
   start_time = time.time()
 
-  # Create output directories
   logger.info("Creating directories...")
   create_directories(CONFIG['directories'])
   
-  # Create model-specific output directory
   model_output_dir = os.path.join(
     CONFIG['directories']['results_directory'],
     f"{CONFIG['mil_model']}_{CONFIG['backbone']}_fold_{CONFIG['fold']}"
@@ -214,7 +208,6 @@ def main():
 
   show_configs()
 
-  # Check if checkpoint exists
   if not os.path.exists(CONFIG['checkpoint_path']):
     logger.error(f"Checkpoint not found at: {CONFIG['checkpoint_path']}")
     logger.error("Please provide a valid checkpoint path or ensure the model was trained")
@@ -248,22 +241,20 @@ def main():
     result_directory = CONFIG['directories']['train_directory'],
     mil_model_name = CONFIG['mil_model'],
     learning_rate = CONFIG['learning_rate'],
-    max_epochs = 1,  # Not used for evaluation
+    max_epochs = 1,
     in_dim = CONFIG['in_dim'],
     n_classes = CONFIG['n_classes'],
     verbose = CONFIG['verbose'],
   )
 
   logger.info(f"Evaluating model from checkpoint: {CONFIG['checkpoint_path']}")
-  patient_results, test_error, test_auc, acc_logger, df, test_f1, test_metrics = train_engine.eval_model(CONFIG['checkpoint_path'])
+  _, test_error, test_auc, acc_logger, df, test_f1, test_metrics = train_engine.eval_model(CONFIG['checkpoint_path'])
   
-  # Save predictions if requested
   if CONFIG['save_predictions']:
     predictions_path = os.path.join(model_output_dir, "predictions.csv")
     logger.info(f"Saving predictions to {predictions_path}")
     df.to_csv(predictions_path, index=False)
   
-  # Save detailed metrics
   metrics_path = os.path.join(model_output_dir, "metrics.json")
   metrics_to_save = {
     'accuracy': 1 - test_error,
@@ -275,32 +266,33 @@ def main():
     'cohens_kappa': test_metrics['cohens_kappa'],
   }
   
-  # Include per-class metrics
+  metrics_to_save['class_metrics'] = {}
   for i in range(CONFIG['n_classes']):
+    class_metrics = {}
     acc, correct, count = acc_logger.get_summary(i)
-    metrics_to_save[f'class_{i}_accuracy'] = acc
-    metrics_to_save[f'class_{i}_count'] = count
+    class_metrics['accuracy'] = acc
+    class_metrics['count'] = count
     
     if 'f1_per_class' in test_metrics and i < len(test_metrics['f1_per_class']):
-      metrics_to_save[f'class_{i}_f1'] = float(test_metrics['f1_per_class'][i])
+      class_metrics['f1'] = float(test_metrics['f1_per_class'][i])
     
     if 'precision_per_class' in test_metrics and i < len(test_metrics['precision_per_class']):
-      metrics_to_save[f'class_{i}_precision'] = float(test_metrics['precision_per_class'][i])
+      class_metrics['precision'] = float(test_metrics['precision_per_class'][i])
     
     if 'recall_per_class' in test_metrics and i < len(test_metrics['recall_per_class']):
-      metrics_to_save[f'class_{i}_recall'] = float(test_metrics['recall_per_class'][i])
+      class_metrics['recall'] = float(test_metrics['recall_per_class'][i])
     
+    metrics_to_save['class_metrics'][f'class_{i}'] = class_metrics
+  
   logger.info(f"Saving metrics to {metrics_path}")
   save_json(metrics_path, metrics_to_save)
   
-  # Plot and save confusion matrix
   if 'confusion_matrix' in test_metrics:
     cm_path = os.path.join(model_output_dir, "confusion_matrix.png")
     logger.info(f"Saving confusion matrix to {cm_path}")
     class_names = [str(i) for i in range(CONFIG['n_classes'])]
     plot_confusion_matrix(test_metrics['confusion_matrix'], class_names, cm_path)
-  
-  # Save full metrics as pickle for further analysis
+
   full_metrics_path = os.path.join(model_output_dir, "full_metrics.pkl")
   logger.info(f"Saving full metrics to {full_metrics_path}")
   save_pkl(full_metrics_path, test_metrics)
@@ -308,7 +300,6 @@ def main():
   end_time = time.time()
   total_time = end_time - start_time
   
-  # Display summary results
   logger.empty_line()
   logger.info("===== Evaluation Results Summary =====")
   logger.info(f"Model: {CONFIG['mil_model']}, Backbone: {CONFIG['backbone']}, Fold: {CONFIG['fold']}")
@@ -319,7 +310,6 @@ def main():
   logger.success(f"Recall: {test_metrics['recall_macro']:.4f}")
   logger.success(f"Cohen's Kappa: {test_metrics['cohens_kappa']:.4f}")
   
-  # Class-specific results
   logger.info("Class-specific results:")
   for i in range(CONFIG['n_classes']):
     acc, correct, count = acc_logger.get_summary(i)
