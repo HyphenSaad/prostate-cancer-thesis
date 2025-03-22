@@ -285,11 +285,11 @@ def create_attention_heatmap(
     attention_scores, 
     patch_size,
     output_path,
-    threshold=0.5,
+    threshold=0.0,  # Set threshold to 0 to show entire heatmap
     alpha=0.5,
     cmap='coolwarm'
 ):
-    """Create and save attention heatmap overlay on the slide"""
+    """Create and save attention heatmap overlay on the entire WSI"""
     try:
         # Validate inputs
         if coords is None or len(coords) == 0:
@@ -319,8 +319,6 @@ def create_attention_heatmap(
         if coords.ndim == 1:
             coords = coords.reshape(-1, 2)
         
-        # Preserve original attention score values without normalization yet
-        # This ensures we're not tampering with the real attention values
         logger.info(f"Coords shape: {coords.shape}")
         logger.info(f"Attention scores shape: {np.array(attention_scores).shape}")
         logger.info(f"Creating heatmap with {len(coords)} points")
@@ -336,8 +334,8 @@ def create_attention_heatmap(
         region_size = wsi_object.level_dim[vis_level]
         logger.info(f"Region size at level {vis_level}: {region_size}")
         
-        # Read the WSI image at the visualization level as background
-        logger.info("Reading the whole slide image for background...")
+        # Read the WSI image at the visualization level
+        logger.info("Reading the whole slide image...")
         wsi_img = np.array(wsi_object.wsi.read_region((0,0), vis_level, region_size).convert("RGB"))
         
         # Scale coordinates to the visualization level
@@ -350,79 +348,58 @@ def create_attention_heatmap(
         scaled_patch_size = int(patch_size * scale[0])
         logger.info(f"Scaled patch size: {scaled_patch_size}")
         
-        # Create a heatmap of the same size as the slide
+        # Normalize attention scores between 0-1 for visualization
+        min_score = np.min(attention_scores)
+        max_score = np.max(attention_scores)
+        norm_attention_scores = (attention_scores - min_score) / (max_score - min_score + 1e-8)
+        
+        # Create empty heatmap of the same size as the slide
         heatmap = np.zeros((region_size[1], region_size[0]), dtype=np.float32)
         
-        # Apply attention scores to full patches, not just centers
-        logger.info("Filling heatmap with attention values for each patch...")
-        for i, (coord, score) in enumerate(zip(scaled_coords, attention_scores)):
-            x, y = coord
+        # First pass - fill points with values
+        logger.info("Creating base heatmap...")
+        for i, (coord, score) in enumerate(zip(scaled_coords, norm_attention_scores)):
+            # Get the patch center coordinates
+            x = min(region_size[0]-1, max(0, coord[0] + scaled_patch_size // 2))
+            y = min(region_size[1]-1, max(0, coord[1] + scaled_patch_size // 2))
             
-            # Check boundaries
-            x_start = max(0, x)
-            y_start = max(0, y)
-            x_end = min(region_size[0], x + scaled_patch_size)
-            y_end = min(region_size[1], y + scaled_patch_size)
-            
-            # Skip if patch would be outside the image boundaries
-            if x_start >= region_size[0] or y_start >= region_size[1] or x_end <= 0 or y_end <= 0:
-                continue
-                
-            # Fill the entire patch area with the attention score
-            # Use np.maximum to keep the highest attention score if patches overlap
-            patch_area = np.full((y_end - y_start, x_end - x_start), score)
-            heatmap[y_start:y_end, x_start:x_end] = np.maximum(
-                heatmap[y_start:y_end, x_start:x_end], 
-                patch_area
-            )
+            # Set the score at the center of the patch
+            heatmap[y, x] = score
         
-        # Check if any patches were processed
-        if np.max(heatmap) == 0:
-            logger.error("No valid patches were found in the specified region")
-            return False
-        
-        # Apply Gaussian smoothing with a larger sigma for better spread
-        # Adjust sigma based on patch size to create a smooth, continuous heatmap
-        sigma = scaled_patch_size * 0.75  # Use a smaller sigma for less aggressive smoothing
+        # Apply a large Gaussian blur to create a continuous gradient across the entire slide
+        # Use a large sigma proportional to the scaled patch size
+        sigma = scaled_patch_size * 2.0  # Increase this to make the heatmap more smooth and spread out
         logger.info(f"Applying Gaussian blur with sigma={sigma}...")
-        smoothed_heatmap = gaussian_filter(heatmap, sigma=sigma)
+        heatmap = gaussian_filter(heatmap, sigma=sigma)
         
-        # Now normalize for visualization - this doesn't alter the real attention relationship
-        norm_heatmap = smoothed_heatmap / np.max(smoothed_heatmap)
+        # Re-normalize to use the full range 0-1
+        if np.max(heatmap) > 0:
+            heatmap = heatmap / np.max(heatmap)
         
-        # Calculate an adaptive threshold if needed - use 20th percentile of non-zero values
-        # This ensures more coverage while still filtering very low attention
-        if threshold <= 0:
-            non_zero_values = norm_heatmap[norm_heatmap > 0]
-            if len(non_zero_values) > 0:
-                adaptive_threshold = np.percentile(non_zero_values, 20)  # 20th percentile
-                logger.info(f"Using adaptive threshold: {adaptive_threshold:.4f}")
-                threshold = adaptive_threshold
-            else:
-                threshold = 0.1
-                logger.info(f"Using default threshold: {threshold}")
-        
-        # Create a colormap and apply it
-        logger.info("Applying colormap...")
+        # Apply colormap to create RGBA heatmap
+        logger.info("Applying colormap to entire WSI...")
         cmap_func = plt.get_cmap(cmap)
         
-        # Generate an RGBA heatmap image
+        # Create full RGBA heatmap image
         heatmap_rgba = np.zeros((region_size[1], region_size[0], 4), dtype=np.float32)
         
-        # For optimization, limit expensive operations to non-zero areas
-        non_zero_y, non_zero_x = np.where(norm_heatmap > threshold)
-        
-        # Apply the colormap to each non-zero pixel
-        for y, x in zip(non_zero_y, non_zero_x):
-            value = norm_heatmap[y, x]
-            color = cmap_func(value)
-            
-            # Scale alpha by attention value - stronger attention = more opaque
-            # This preserves the relative importance of attention scores
-            alpha_value = min(1.0, alpha * (value / threshold))
-            
-            heatmap_rgba[y, x, :3] = color[:3]
-            heatmap_rgba[y, x, 3] = alpha_value
+        # Apply colormap to the entire heatmap
+        # For every pixel in the image...
+        for y in range(region_size[1]):
+            for x in range(region_size[0]):
+                # Get the normalized attention value
+                value = heatmap[y, x]
+                
+                # Apply colormap
+                color = cmap_func(value)
+                
+                # Store color values
+                heatmap_rgba[y, x, :3] = color[:3]
+                
+                # Set alpha proportional to attention value
+                # Adjust minimum alpha to ensure even low attention areas are slightly visible
+                min_alpha = 0.05  # Minimum alpha for very low attention areas
+                heatmap_rgba[y, x, 3] = min_alpha + value * (alpha - min_alpha)
         
         # Convert to uint8 for PIL
         heatmap_rgba = (heatmap_rgba * 255).astype(np.uint8)
@@ -445,18 +422,21 @@ def create_attention_heatmap(
         
         # Save the final image
         result.convert("RGB").save(output_path)
-        logger.success(f"Attention heatmap saved to: {output_path}")
+        logger.success(f"Full WSI attention heatmap saved to: {output_path}")
         
-        # Save a heatmap-only version
+        # Save the heatmap-only version (for inspection)
         heatmap_only_path = os.path.join(
             os.path.dirname(output_path),
             f"{os.path.basename(output_path).split('.')[0]}_heatmap_only.png"
         )
         
-        # Create a heatmap-only visualization with white background
-        heatmap_only_img = Image.new('RGBA', wsi_img_pil.size, (255, 255, 255, 255))
-        heatmap_only_result = Image.alpha_composite(heatmap_only_img, heatmap_img)
-        heatmap_only_result.convert("RGB").save(heatmap_only_path)
+        # Convert heatmap to RGB heatmap for better visualization
+        plt.figure(figsize=(10, 10))
+        plt.imshow(heatmap, cmap=cmap)
+        plt.colorbar()
+        plt.axis('off')
+        plt.savefig(heatmap_only_path, bbox_inches='tight', pad_inches=0)
+        plt.close()
         logger.info(f"Saved heatmap-only version to: {heatmap_only_path}")
         
         return True
