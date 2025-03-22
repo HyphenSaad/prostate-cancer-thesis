@@ -17,6 +17,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from constants.misc import OUTPUT_BASE_DIRECTORY, DATASET_BASE_DIRECTORY, DATASET_INFO_FILE_NAME
 from constants.mil_models import MILModels
 from constants.encoders import Encoders
+from constants.configs import CREATE_PATCHES_PRESET  # Import segmentation configs
 from utils.helper import create_directories
 from utils.data_loader import GenericMILDataset, GenericSplit
 from utils.train_engine import TrainEngine
@@ -326,31 +327,24 @@ def create_attention_heatmap(
         logger.info(f"Attention scores shape: {norm_scores.shape}")
         logger.info(f"Creating heatmap with {len(coords)} points")
         
-        # Perform tissue segmentation first (this is required for vis_heatmap to work)
-        logger.info("Performing tissue segmentation for the slide...")
+        # Get segmentation parameters from CREATE_PATCHES_PRESET
         seg_params = {
-            'seg_level': -1,  # Auto-select best level
-            'sthresh': 8,
-            'mthresh': 7,
-            'close': 4,
-            'use_otsu': False,
-            'keep_ids': [],
-            'exclude_ids': []
-        }
-        filter_params = {
-            'a_t': 100,
-            'a_h': 16,
-            'max_n_holes': 8
+            'seg_level': int(CREATE_PATCHES_PRESET['seg_level']),
+            'sthresh': int(CREATE_PATCHES_PRESET['sthresh']),
+            'mthresh': int(CREATE_PATCHES_PRESET['mthresh']),
+            'close': int(CREATE_PATCHES_PRESET['close']),
+            'use_otsu': bool(CREATE_PATCHES_PRESET['use_otsu']),
+            'keep_ids': CREATE_PATCHES_PRESET['keep_ids'],
+            'exclude_ids': CREATE_PATCHES_PRESET['exclude_ids'],
         }
         
-        # Try segmentation and continue even if it fails
-        try:
-            wsi_object.segment_tissue(**seg_params, filter_params=filter_params)
-            logger.info("Tissue segmentation completed successfully")
-        except Exception as seg_error:
-            logger.warning(f"Tissue segmentation failed: {seg_error}. Will continue without segmentation.")
-            wsi_object.contours_tissue = None
-            wsi_object.holes_tissue = None
+        filter_params = {
+            'a_t': int(CREATE_PATCHES_PRESET['a_t']),
+            'a_h': int(CREATE_PATCHES_PRESET['a_h']),
+            'max_n_holes': int(CREATE_PATCHES_PRESET['max_n_holes']),
+        }
+        
+        logger.info(f"Using segmentation parameters from configs: {seg_params}")
         
         # Determine the best visualization level for the whole slide
         vis_level = -1
@@ -360,21 +354,26 @@ def create_attention_heatmap(
         logger.info(f"Using visualization level: {vis_level}")
         
         # Create a colormap function to map attention scores to colors
-        import matplotlib.pyplot as plt
         cmap_func = plt.get_cmap(cmap)
         
         # Determine the dimensions of the slide at the visualization level
         region_size = wsi_object.level_dim[vis_level]
         
-        # Create a blank image the size of the slide at the visualization level
-        if wsi_object.contours_tissue is not None:
-            # Create background from the actual slide
-            logger.info("Reading the whole slide image for background...")
-            img = np.array(wsi_object.wsi.read_region((0,0), vis_level, region_size).convert("RGB"))
-        else:
-            # Create a white background if segmentation failed
-            logger.info("Creating a blank canvas for heatmap...")
-            img = np.ones((region_size[1], region_size[0], 3), dtype=np.uint8) * 255
+        # Read the WSI image at the visualization level as background (always)
+        logger.info("Reading the whole slide image for background...")
+        img = np.array(wsi_object.wsi.read_region((0,0), vis_level, region_size).convert("RGB"))
+        
+        # Try segmentation but don't let it affect our background image
+        segmentation_success = False
+        try:
+            logger.info("Attempting tissue segmentation...")
+            wsi_object.segment_tissue(**seg_params, filter_params=filter_params)
+            segmentation_success = True
+            logger.info("Tissue segmentation completed successfully")
+        except Exception as seg_error:
+            logger.warning(f"Tissue segmentation failed: {seg_error}. Will continue without tissue mask.")
+            wsi_object.contours_tissue = None
+            wsi_object.holes_tissue = None
         
         # Scale coordinates to the visualization level
         downsample = wsi_object.level_downsamples[vis_level]
@@ -423,11 +422,47 @@ def create_attention_heatmap(
                 0
             )
         
+        # Save the original WSI at this visualization level for comparison
+        orig_wsi_path = os.path.join(
+            os.path.dirname(output_path),
+            f"{os.path.basename(output_path).split('_')[0]}_original.png"
+        )
+        orig_img = np.array(wsi_object.wsi.read_region((0,0), vis_level, region_size).convert("RGB"))
+        Image.fromarray(orig_img).save(orig_wsi_path)
+        logger.info(f"Saved original WSI thumbnail to: {orig_wsi_path}")
+        
         # Save the heatmap
         logger.info("Saving the final heatmap...")
         heatmap = Image.fromarray(img)
         heatmap.save(output_path)
         logger.success(f"Attention heatmap saved to: {output_path}")
+        
+        # Create a zoomed version focusing on the areas with attention
+        try:
+            # Compute bounding box of non-zero attention points
+            min_x = min(coord[0] for coord, score in zip(scaled_coords, norm_scores) if score > threshold)
+            min_y = min(coord[1] for coord, score in zip(scaled_coords, norm_scores) if score > threshold)
+            max_x = max(coord[0] + scaled_patch_size for coord, score in zip(scaled_coords, norm_scores) if score > threshold)
+            max_y = max(coord[1] + scaled_patch_size for coord, score in zip(scaled_coords, norm_scores) if score > threshold)
+            
+            # Add some padding
+            padding = scaled_patch_size * 2
+            min_x = max(0, min_x - padding)
+            min_y = max(0, min_y - padding)
+            max_x = min(region_size[0], max_x + padding)
+            max_y = min(region_size[1], max_y + padding)
+            
+            # Crop the image
+            zoom_img = img[min_y:max_y, min_x:max_x]
+            zoom_path = os.path.join(
+                os.path.dirname(output_path),
+                f"{os.path.basename(output_path).split('.')[0]}_zoomed.png"
+            )
+            Image.fromarray(zoom_img).save(zoom_path)
+            logger.info(f"Saved zoomed heatmap to: {zoom_path}")
+        except Exception as e:
+            logger.warning(f"Couldn't create zoomed view: {e}")
+            
         return True
     except Exception as e:
         logger.error(f"Error creating attention heatmap: {e}")
