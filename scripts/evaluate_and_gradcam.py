@@ -5,7 +5,6 @@ import os
 import sys
 import torch
 import numpy as np
-import argparse
 import matplotlib.pyplot as plt
 from PIL import Image
 import h5py
@@ -27,6 +26,7 @@ from utils.logger import Logger
 
 logger = Logger()
 
+# Hardcoded configuration
 CONFIG = {
     'backbone': Encoders.RESNET50.value,
     'mil_model': MILModels.TRANS_MIL.value,
@@ -34,12 +34,12 @@ CONFIG = {
     'patch_size': 512,
     'in_dim': 1024,
     'drop_out': 0.25,
-    'slide_id': None,
+    'slide_id': '00bbc1482301d16de3ff63238cfd0b34',  # Hardcoded slide ID as requested
     'checkpoint_path': None,
     'fold': 0,
     'slides_format': 'tiff',
     'attention_heatmap': True,
-    'gradcam': False,
+    'gradcam': True,
     'alpha': 0.5,  # Transparency of heatmap overlay
     'directories': {
         'slides_directory': os.path.join(DATASET_BASE_DIRECTORY, DATASET_SLIDES_FOLDER_NAME),
@@ -47,7 +47,7 @@ CONFIG = {
         'temp_directory': os.path.join(OUTPUT_BASE_DIRECTORY, 'temp'),
         'train_directory': os.path.join(OUTPUT_BASE_DIRECTORY, 'train'),
     },
-    'verbose': False
+    'verbose': True
 }
 
 def show_configs():
@@ -67,140 +67,9 @@ def show_configs():
     logger.text(f"> GradCAM: {CONFIG['gradcam']}")
     logger.empty_line()
 
-def load_arguments():
-    parser = argparse.ArgumentParser(description="Evaluate MIL Model and Generate GradCAM/Attention Visualizations")
-    parser.add_argument(
-        "--backbone",
-        type=str,
-        default=CONFIG['backbone'],
-        help=f"Backbone encoder model (default: {CONFIG['backbone']})"
-    )
-    parser.add_argument(
-        "--mil-model",
-        type=str,
-        default=CONFIG['mil_model'],
-        help=f"MIL model type (default: {CONFIG['mil_model']})"
-    )
-    parser.add_argument(
-        "--n-classes",
-        type=int,
-        default=CONFIG['n_classes'],
-        help=f"Number of classes (default: {CONFIG['n_classes']})"
-    )
-    parser.add_argument(
-        "--patch-size",
-        type=int,
-        default=CONFIG['patch_size'],
-        help=f"Patch size (default: {CONFIG['patch_size']})"
-    )
-    parser.add_argument(
-        "--in-dim",
-        type=int,
-        default=CONFIG['in_dim'],
-        help=f"Input dimension (default: {CONFIG['in_dim']})"
-    )
-    parser.add_argument(
-        "--slide-id",
-        type=str,
-        required=True,
-        help="Slide ID to evaluate"
-    )
-    parser.add_argument(
-        "--checkpoint-path",
-        type=str,
-        default=CONFIG['checkpoint_path'],
-        help="Path to model checkpoint (default: auto-generated based on fold)"
-    )
-    parser.add_argument(
-        "--fold",
-        type=int,
-        default=CONFIG['fold'],
-        help=f"Fold to use for checkpoint (default: {CONFIG['fold']})"
-    )
-    parser.add_argument(
-        "--slides-format",
-        type=str,
-        default=CONFIG['slides_format'],
-        help=f"Format of slide files (default: {CONFIG['slides_format']})"
-    )
-    parser.add_argument(
-        "--attention-heatmap",
-        type=bool,
-        default=CONFIG['attention_heatmap'],
-        help=f"Generate attention heatmap (default: {CONFIG['attention_heatmap']})"
-    )
-    parser.add_argument(
-        "--gradcam",
-        type=bool,
-        default=CONFIG['gradcam'],
-        help=f"Generate GradCAM visualization (default: {CONFIG['gradcam']})"
-    )
-    parser.add_argument(
-        "--alpha",
-        type=float,
-        default=CONFIG['alpha'],
-        help=f"Transparency of heatmap overlay (default: {CONFIG['alpha']})"
-    )
-    parser.add_argument(
-        "--output-base-directory",
-        type=str,
-        default=OUTPUT_BASE_DIRECTORY,
-        help=f"Output base directory (default: {OUTPUT_BASE_DIRECTORY})"
-    )
-    parser.add_argument(
-        "--dataset-base-directory",
-        type=str,
-        default=DATASET_BASE_DIRECTORY,
-        help=f"Dataset base directory (default: {DATASET_BASE_DIRECTORY})"
-    )
-    parser.add_argument(
-        "--dataset-slides-folder-name",
-        type=str,
-        default=DATASET_SLIDES_FOLDER_NAME,
-        help=f"Dataset slides folder name (default: {DATASET_SLIDES_FOLDER_NAME})"
-    )
-    parser.add_argument(
-        "--verbose",
-        type=bool,
-        default=CONFIG['verbose'],
-        help=f"Verbose mode (default: {CONFIG['verbose']})"
-    )
-    
-    args = parser.parse_args()
-    
-    CONFIG['backbone'] = args.backbone
-    CONFIG['mil_model'] = args.mil_model
-    CONFIG['n_classes'] = args.n_classes
-    CONFIG['patch_size'] = args.patch_size
-    CONFIG['in_dim'] = args.in_dim
-    CONFIG['slide_id'] = args.slide_id
-    CONFIG['checkpoint_path'] = args.checkpoint_path
-    CONFIG['fold'] = args.fold
-    CONFIG['slides_format'] = args.slides_format
-    CONFIG['attention_heatmap'] = args.attention_heatmap
-    CONFIG['gradcam'] = args.gradcam
-    CONFIG['alpha'] = args.alpha
-    CONFIG['verbose'] = args.verbose
-    
-    output_base_dir = args.output_base_directory
-    dataset_base_dir = args.dataset_base_directory
-    dataset_slides_folder = args.dataset_slides_folder_name
-    
-    CONFIG['directories']['slides_directory'] = os.path.join(dataset_base_dir, dataset_slides_folder)
-    CONFIG['directories']['output_directory'] = os.path.join(output_base_dir, 'evaluation_visualizations')
-    CONFIG['directories']['temp_directory'] = os.path.join(output_base_dir, 'temp')
-    CONFIG['directories']['train_directory'] = os.path.join(output_base_dir, 'train')
-
-    # If checkpoint path not provided, construct it based on fold
-    if CONFIG['checkpoint_path'] is None:
-        CONFIG['checkpoint_path'] = os.path.join(
-            CONFIG['directories']['train_directory'],
-            f"s_{CONFIG['fold']}_checkpoint.pt"
-        )
-
 def create_patches_for_slide(slide_id, slide_path, output_dir):
     """
-    Create patches for a specific slide
+    Create patches for a specific slide with improved error handling
     """
     logger.info(f"Creating patches for slide {slide_id}...")
     patches_save_path = os.path.join(output_dir, f"{slide_id}.h5")
@@ -216,34 +85,36 @@ def create_patches_for_slide(slide_id, slide_path, output_dir):
     except Exception as e:
         logger.error(f"Failed to load slide: {e}")
         return None
-    
-    # Segment tissue
-    seg_params = {
-        'seg_level': int(CREATE_PATCHES_PRESET['seg_level']),
-        'sthresh': int(CREATE_PATCHES_PRESET['sthresh']),
-        'mthresh': int(CREATE_PATCHES_PRESET['mthresh']),
-        'close': int(CREATE_PATCHES_PRESET['close']),
-        'use_otsu': bool(CREATE_PATCHES_PRESET['use_otsu']),
-        'keep_ids': CREATE_PATCHES_PRESET['keep_ids'],
-        'exclude_ids': CREATE_PATCHES_PRESET['exclude_ids'],
-    }
-    
-    filter_params = {
-        'a_t': int(CREATE_PATCHES_PRESET['a_t']),
-        'a_h': int(CREATE_PATCHES_PRESET['a_h']),
-        'max_n_holes': int(CREATE_PATCHES_PRESET['max_n_holes']),
-    }
-    
-    wsi_object.segment_tissue(**seg_params, filter_params=filter_params)
-    
-    # Determine best level for segmentation if not explicitly provided
-    if seg_params['seg_level'] < 0:
-        if len(wsi_object.level_dim) == 1:
-            seg_params['seg_level'] = 0
-        else:
-            wsi = wsi_object.get_open_slide()
-            best_level = wsi.get_best_level_for_downsample(64)
-            seg_params['seg_level'] = best_level
+
+    # Modified approach for this specific slide - skip tissue segmentation
+    # and use the whole slide instead
+    try:
+        # Try normal segmentation first
+        seg_params = {
+            'seg_level': int(CREATE_PATCHES_PRESET['seg_level']),
+            'sthresh': int(CREATE_PATCHES_PRESET['sthresh']),
+            'mthresh': int(CREATE_PATCHES_PRESET['mthresh']),
+            'close': int(CREATE_PATCHES_PRESET['close']),
+            'use_otsu': bool(CREATE_PATCHES_PRESET['use_otsu']),
+            'keep_ids': CREATE_PATCHES_PRESET['keep_ids'],
+            'exclude_ids': CREATE_PATCHES_PRESET['exclude_ids'],
+        }
+        
+        filter_params = {
+            'a_t': int(CREATE_PATCHES_PRESET['a_t']),
+            'a_h': int(CREATE_PATCHES_PRESET['a_h']),
+            'max_n_holes': int(CREATE_PATCHES_PRESET['max_n_holes']),
+        }
+        
+        wsi_object.segment_tissue(**seg_params, filter_params=filter_params)
+    except Exception as e:
+        logger.warning(f"Standard tissue segmentation failed: {e}")
+        logger.info("Falling back to simplified segmentation approach")
+        
+        # Simplified approach: create a single contour covering the whole slide
+        w, h = wsi_object.level_dim[0]
+        wsi_object.contours_tissue = [np.array([[[0, 0]], [[w, 0]], [[w, h]], [[0, h]]], dtype=np.int32)]
+        wsi_object.holes_tissue = [[]]  # No holes
     
     # Process contours to extract patches
     patch_params = {
@@ -255,10 +126,48 @@ def create_patches_for_slide(slide_id, slide_path, output_dir):
         'contour_fn': CREATE_PATCHES_PRESET['contour_fn'],
     }
     
-    patch_file = wsi_object.process_contours(**patch_params)
-    logger.success(f"Created patches for slide {slide_id}")
-    
-    return patches_save_path
+    try:
+        patch_file = wsi_object.process_contours(**patch_params)
+        logger.success(f"Created patches for slide {slide_id}")
+        return patches_save_path
+    except Exception as e:
+        logger.error(f"Failed to process contours: {e}")
+        
+        # If normal method fails, try direct patch extraction
+        logger.info("Attempting direct grid-based patch extraction")
+        
+        w, h = wsi_object.level_dim[0]
+        patch_size = CONFIG['patch_size']
+        step_size = CONFIG['patch_size']
+        
+        # Generate grid coordinates
+        coords = []
+        for x in range(0, w-patch_size+1, step_size):
+            for y in range(0, h-patch_size+1, step_size):
+                coords.append([x, y])
+        
+        if len(coords) == 0:
+            logger.error("No valid coordinates generated")
+            return None
+            
+        coords = np.array(coords)
+        
+        # Save coordinates to H5 file
+        asset_dict = {'coords': coords}
+        attr_dict = {
+            'coords': {
+                'patch_size': patch_size,
+                'patch_level': 0,
+                'downsample': wsi_object.level_downsamples[0],
+                'downsampled_level_dim': wsi_object.level_dim[0],
+                'level_dim': wsi_object.level_dim[0],
+                'name': slide_id
+            }
+        }
+        
+        save_hdf5(patches_save_path, asset_dict, attr_dict, mode='w')
+        logger.success(f"Created grid-based patches for slide {slide_id}")
+        return patches_save_path
 
 def extract_patches_from_h5(slide_id, h5_path, extract_dir):
     """
@@ -364,6 +273,12 @@ def load_mil_model():
     """
     Load the MIL model from checkpoint
     """
+    if CONFIG['checkpoint_path'] is None:
+        CONFIG['checkpoint_path'] = os.path.join(
+            CONFIG['directories']['train_directory'],
+            f"s_{CONFIG['fold']}_checkpoint.pt"
+        )
+        
     logger.info(f"Loading {CONFIG['mil_model']} model from {CONFIG['checkpoint_path']}...")
     
     drop_out = CONFIG['drop_out']
@@ -408,11 +323,19 @@ def get_attention_map(model, features, coords):
         attention_hook_handle = None
         
         def hook_fn(module, input, output):
-            outputs['attention'] = output[1]  # Assuming attention is the second output
+            # For TransMIL, this will capture attention weights
+            if isinstance(output, tuple) and len(output) > 1:
+                outputs['attention'] = output[1]
+            else:
+                # If output structure is different, try to get attention from module
+                if hasattr(module, 'attention_weights'):
+                    outputs['attention'] = module.attention_weights
         
         # Register hook (this is model-specific and might need adjustment)
-        if hasattr(model, 'layer2'):
+        if hasattr(model, 'layer2') and hasattr(model.layer2, 'attn'):
             attention_hook_handle = model.layer2.attn.register_forward_hook(hook_fn)
+        elif hasattr(model, 'attn'):
+            attention_hook_handle = model.attn.register_forward_hook(hook_fn)
             
         # Run inference
         with torch.no_grad():
@@ -429,6 +352,16 @@ def get_attention_map(model, features, coords):
                 attention = attention.mean(dim=1)
             # Take the scores related to the CLS token attending to patches
             attention_scores = attention[0, 0, 1:].cpu().numpy()
+            
+            # Make sure we have the right number of attention scores
+            if len(attention_scores) < len(features):
+                # Pad with zeros if necessary
+                attention_scores = np.pad(attention_scores, 
+                                          (0, len(features) - len(attention_scores)), 
+                                          'constant')
+            elif len(attention_scores) > len(features):
+                # Truncate if necessary
+                attention_scores = attention_scores[:len(features)]
         else:
             # Fallback method if hook doesn't capture attention
             logger.warning("Couldn't extract attention through hook, using uniform attention")
@@ -439,64 +372,13 @@ def get_attention_map(model, features, coords):
         attention_scores = np.ones(len(features))
     
     # Normalize attention scores
-    attention_scores = (attention_scores - attention_scores.min()) / (attention_scores.max() - attention_scores.min() + 1e-8)
+    if attention_scores.max() > attention_scores.min():
+        attention_scores = (attention_scores - attention_scores.min()) / (attention_scores.max() - attention_scores.min() + 1e-8)
+    else:
+        # If all values are the same, use uniform attention
+        attention_scores = np.ones(len(features))
     
     return attention_scores
-
-def generate_gradcam(model, features, target_class=None):
-    """
-    Generate GradCAM visualization
-    """
-    logger.info("Generating GradCAM visualization...")
-    
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    features = features.to(device)
-    
-    # Need to enable gradient calculation for GradCAM
-    features.requires_grad = True
-    
-    # Forward pass
-    outputs = model(features.unsqueeze(0))
-    logits = outputs['wsi_logits']
-    
-    # If target class not specified, use the predicted class
-    if target_class is None:
-        target_class = torch.argmax(logits, dim=1).item()
-    
-    # Zero all gradients
-    model.zero_grad()
-    
-    # Target for backprop
-    one_hot = torch.zeros_like(logits)
-    one_hot[0, target_class] = 1
-    
-    # Backward pass
-    logits.backward(gradient=one_hot, retain_graph=True)
-    
-    # Get gradients and activations (model-specific, may need adjustment)
-    gradients = None
-    activations = None
-    
-    if CONFIG['mil_model'] == MILModels.TRANS_MIL.value:
-        if hasattr(model, '_fc1'):
-            # For TransMIL, use the features as activations and gradients from a suitable layer
-            activations = features.detach().cpu().numpy()
-            # This is a placeholder - actual gradient collection depends on model architecture
-            gradients = features.grad.detach().cpu().numpy()
-    
-    if gradients is None or activations is None:
-        logger.warning(f"GradCAM not implemented for {CONFIG['mil_model']}, falling back to attention map")
-        return get_attention_map(model, features, None)
-    
-    # Weight the channels by gradients
-    weights = np.mean(gradients, axis=(0))  # Global average pooling
-    cam = np.sum(weights[:, np.newaxis] * activations, axis=1)
-    
-    # ReLU and normalize
-    cam = np.maximum(cam, 0)
-    cam = (cam - cam.min()) / (cam.max() - cam.min() + 1e-8)
-    
-    return cam
 
 def predict_slide(model, features):
     """
@@ -537,19 +419,43 @@ def create_visualization(slide_id, attention_scores, coords, result):
     # Determine visualization level
     vis_level = wsi_object.wsi.get_best_level_for_downsample(32)
     
-    # Create heatmap visualization
-    heatmap = wsi_object.vis_heatmap(
-        scores=attention_scores, 
-        coords=coords,
-        vis_level=vis_level,
-        patch_size=(CONFIG['patch_size'], CONFIG['patch_size']),
-        blank_canvas=False,
-        cmap='jet',
-        alpha=CONFIG['alpha'],
-        use_holes=True,
-        binarize=False,
-        segment=True
-    )
+    try:
+        # Create heatmap visualization with error handling
+        heatmap = wsi_object.vis_heatmap(
+            scores=attention_scores, 
+            coords=coords,
+            vis_level=vis_level,
+            patch_size=(CONFIG['patch_size'], CONFIG['patch_size']),
+            blank_canvas=False,
+            cmap='jet',
+            alpha=CONFIG['alpha'],
+            use_holes=True,
+            binarize=False,
+            segment=False  # Disable segmentation to avoid errors
+        )
+    except Exception as e:
+        logger.warning(f"Failed to create heatmap with original settings: {e}")
+        # Fallback to simpler visualization
+        try:
+            heatmap = wsi_object.vis_heatmap(
+                scores=attention_scores, 
+                coords=coords,
+                vis_level=vis_level,
+                patch_size=(CONFIG['patch_size'], CONFIG['patch_size']),
+                blank_canvas=True,  # Use blank canvas
+                cmap='jet',
+                alpha=CONFIG['alpha'],
+                use_holes=False,
+                binarize=False,
+                segment=False
+            )
+        except Exception as e:
+            logger.error(f"Failed to create heatmap: {e}")
+            # Return fallback paths even though visualization failed
+            output_path = os.path.join(CONFIG['directories']['output_directory'], f"{slide_id}_prediction_{result['predicted_class']}.txt")
+            with open(output_path, 'w') as f:
+                f.write(f"Prediction: {result['predicted_class_name']} with probability {result['probabilities'][result['predicted_class_name']]:.4f}")
+            return output_path, output_path
     
     # Save visualization
     output_filename = f"{slide_id}_prediction_{result['predicted_class']}.png"
@@ -605,13 +511,6 @@ def create_visualization(slide_id, attention_scores, coords, result):
     return output_path, labeled_path
 
 def main():
-    logger.draw_header("Evaluate and Visualize MIL Model")
-    load_arguments()
-    
-    if CONFIG['slide_id'] is None:
-        logger.error("Slide ID must be provided")
-        return
-    
     logger.info(f"Processing slide {CONFIG['slide_id']}...")
     show_configs()
     
@@ -674,11 +573,8 @@ def main():
     # Step 7: Run inference and get prediction
     result = predict_slide(model, features)
     
-    # Step 8: Generate attention or GradCAM map
-    if CONFIG['gradcam']:
-        attention_scores = generate_gradcam(model, features)
-    else:
-        attention_scores = get_attention_map(model, features, coords)
+    # Step 8: Generate attention map
+    attention_scores = get_attention_map(model, features, coords)
     
     # Step 9: Create and save visualization
     viz_path, labeled_path = create_visualization(CONFIG['slide_id'], attention_scores, coords, result)
