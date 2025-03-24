@@ -103,10 +103,10 @@ class PatchDataset(Dataset):
     # assert len(actual_files) + 1 >= len(self.coords), \
     #   'real patch {} not match h5 patch number {} [slide_id: {}]'.format(len(actual_files), len(self.coords), os.path.basename(img_root))
 
-    if len(actual_files) + 1 > len(self.coords):
-      self.coords = []
-      logger.error(f'real patch {len(actual_files)} not match h5 patch number {len(self.coords)} [slide_id: {os.path.basename(img_root)}]')
-      return
+    # if len(actual_files) + 1 > len(self.coords):
+    #   self.coords = []
+    #   logger.error(f'real patch {len(actual_files)} not match h5 patch number {len(self.coords)} [slide_id: {os.path.basename(img_root)}]')
+    #   return
 
   def __len__(self):
     return len(self.coords)
@@ -300,8 +300,8 @@ def main():
     images_path = os.path.join(CONFIG['directories']['extract_patches_directory'], slide_id)
     patch_dataset = PatchDataset(images_path, h5_file_path, transform = custom_transformer)
 
-    if patch_dataset.coords == []:
-      continue
+    # if patch_dataset.coords == []:
+    #   continue
     
     loader = DataLoader(
       patch_dataset,
