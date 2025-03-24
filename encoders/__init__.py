@@ -19,6 +19,9 @@ def get_encoder(
   ]:
     from encoders.resnet import get_encoder_baseline
     encoder = get_encoder_baseline(encoder_name, pretrained=True).to(device)
+  elif encoder_name == Encoders.UNI2.value:
+    from encoders.uni2 import get_encoder_uni
+    encoder = get_encoder_uni(device)
   else:
     raise NotImplementedError(f'Encoder \'{encoder_name}\' is not implemented, yet!')
 
@@ -45,6 +48,9 @@ def get_custom_transformer(encoder_name: str) -> torchvision.transforms:
     Encoders.RESNET152.value,
   ]:
     from encoders.resnet import custom_transformer
+    transformer = custom_transformer()
+  elif encoder_name == Encoders.UNI2.value:
+    from encoders.uni2 import custom_transformer
     transformer = custom_transformer()
   else:
     raise NotImplementedError(f'Transformer for \'{encoder_name}\' is not implemented, yet!')
