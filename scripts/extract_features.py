@@ -101,7 +101,7 @@ class PatchDataset(Dataset):
     
     actual_files = os.listdir(img_root)
     assert len(actual_files) + 1 >= len(self.coords), \
-      'real patch {} not match h5 patch number {}'.format(len(actual_files), len(self.coords))
+      'real patch {} not match h5 patch number {} [slide_id: {}]'.format(len(actual_files), len(self.coords), os.path.basename(img_root))
 
   def __len__(self):
     return len(self.coords)
