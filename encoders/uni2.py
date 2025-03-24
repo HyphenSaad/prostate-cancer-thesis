@@ -21,7 +21,7 @@ def get_encoder(device):
     dynamic_img_size = True,
   )
 
-  model.load_state_dict(torch.load('encoders/ckpts/uni2.bin', map_location="cpu"), strict=True)
+  model.load_state_dict(torch.load('../encoders/ckpts/uni2.bin', map_location="cpu"), strict=True)
   model.eval()
 
   return model.to(device)
