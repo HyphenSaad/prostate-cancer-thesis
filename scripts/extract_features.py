@@ -305,7 +305,7 @@ def main():
     one_slide_start = time.time()
 
     if not os.path.exists(h5_file_path):
-      if CONFIG['verbose']: logger.error(f'{h5_file_path} does not exist, skipping...')
+      logger.error(f'{h5_file_path} does not exist, skipping...')
       continue
 
     images_path = os.path.join(CONFIG['directories']['extract_patches_directory'], slide_id)
