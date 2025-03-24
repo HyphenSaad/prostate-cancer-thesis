@@ -84,6 +84,22 @@ class DatasetAllBags(Dataset):
 	def __getitem__(self, idx):
 		return self.df['dir'][idx], self.df['slide_id'][idx]
 
+def verify_patch_count(images_path, h5_file_path):
+  """Verify that the number of patch files matches the coordinates in the h5 file."""
+  if not os.path.exists(images_path) or not os.path.exists(h5_file_path):
+    return False
+    
+  actual_files = os.listdir(images_path)
+  
+  with h5py.File(h5_file_path, 'r') as hf:
+    coords = hf['coords'][()]
+    
+  if len(actual_files) + 1 < len(coords):
+    logger.warning(f'Patch count mismatch: found {len(actual_files)} patches but h5 file has {len(coords)} coordinates')
+    return False
+  
+  return True
+
 class PatchDataset(Dataset):
   def __init__(
     self,
@@ -100,13 +116,8 @@ class PatchDataset(Dataset):
       self.coords = hf['coords'][()]
     
     actual_files = os.listdir(img_root)
-    # assert len(actual_files) + 1 >= len(self.coords), \
-    #   'real patch {} not match h5 patch number {} [slide_id: {}]'.format(len(actual_files), len(self.coords), os.path.basename(img_root))
-
-    # if len(actual_files) + 1 > len(self.coords):
-    #   self.coords = []
-    #   logger.error(f'real patch {len(actual_files)} not match h5 patch number {len(self.coords)} [slide_id: {os.path.basename(img_root)}]')
-    #   return
+    if len(actual_files) + 1 < len(self.coords):
+      logger.warning(f'real patch {len(actual_files)} not match h5 patch number {len(self.coords)} [slide_id: {os.path.basename(img_root)}]')
 
   def __len__(self):
     return len(self.coords)
@@ -298,11 +309,12 @@ def main():
       continue
 
     images_path = os.path.join(CONFIG['directories']['extract_patches_directory'], slide_id)
-    patch_dataset = PatchDataset(images_path, h5_file_path, transform = custom_transformer)
-
-    # if patch_dataset.coords == []:
-    #   continue
     
+    if not verify_patch_count(images_path, h5_file_path):
+      logger.warning(f'Skipping {slide_id} due to patch count mismatch')
+      continue
+    
+    patch_dataset = PatchDataset(images_path, h5_file_path, transform = custom_transformer)
     loader = DataLoader(
       patch_dataset,
       batch_size = CONFIG['batch_size'],
