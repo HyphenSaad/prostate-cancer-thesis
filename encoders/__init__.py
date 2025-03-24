@@ -20,8 +20,8 @@ def get_encoder(
     from encoders.resnet import get_encoder_baseline
     encoder = get_encoder_baseline(encoder_name, pretrained=True).to(device)
   elif encoder_name == Encoders.UNI2.value:
-    from encoders.uni2 import get_encoder_uni
-    encoder = get_encoder_uni(device)
+    from encoders.uni2 import get_encoder
+    encoder = get_encoder(device)
   else:
     raise NotImplementedError(f'Encoder \'{encoder_name}\' is not implemented, yet!')
 
