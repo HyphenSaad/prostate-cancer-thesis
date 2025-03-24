@@ -21,12 +21,7 @@ def get_encoder(device):
     dynamic_img_size = True,
   )
 
-  # get current directory
-  import os
-  cwd = os.getcwd()
-  print(cwd)
-
-  model.load_state_dict(torch.load('./ckpts/uni2.bin', map_location="cpu"), strict=True)
+  model.load_state_dict(torch.load('./prostate-cancer-thesis/encoders/ckpts/uni2.bin', map_location="cpu"), strict=True)
   model.eval()
 
   return model.to(device)
