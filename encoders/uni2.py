@@ -2,6 +2,8 @@ import timm
 from torchvision import transforms
 import torch
 
+from constants.misc import ENCODER_CHECKPOINT_UNI2
+
 def get_encoder(device):
   model = timm.create_model(
     "hf-hub:MahmoodLab/UNI2-h", 
@@ -21,7 +23,7 @@ def get_encoder(device):
     dynamic_img_size = True,
   )
 
-  model.load_state_dict(torch.load('./prostate-cancer-thesis/encoders/ckpts/uni2.bin', map_location="cpu"), strict=True)
+  model.load_state_dict(torch.load(ENCODER_CHECKPOINT_UNI2, map_location="cpu"), strict=True)
   model.eval()
 
   return model.to(device)
@@ -30,6 +32,9 @@ def custom_transformer():
   transform = transforms.Compose([
     transforms.Resize(224),
     transforms.ToTensor(),
-    transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+    transforms.Normalize(
+      mean = (0.485, 0.456, 0.406), 
+      std = (0.229, 0.224, 0.225)
+    ),
   ])
   return transform

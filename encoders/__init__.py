@@ -2,6 +2,7 @@ import torch
 import torchvision
 
 from constants.encoders import Encoders
+from constants.misc import ENCODER_CHECKPOINT_CTRANSPATH
 
 def get_encoder(
   encoder_name: str,
@@ -22,6 +23,9 @@ def get_encoder(
   elif encoder_name == Encoders.UNI2.value:
     from encoders.uni2 import get_encoder
     encoder = get_encoder(device)
+  elif encoder_name == Encoders.CTRANSPATH.value:
+    from encoders.ctranspath import ctranspath
+    encoder = ctranspath(ckpt_path = ENCODER_CHECKPOINT_CTRANSPATH).to(device)
   else:
     raise NotImplementedError(f'Encoder \'{encoder_name}\' is not implemented, yet!')
 
@@ -51,6 +55,9 @@ def get_custom_transformer(encoder_name: str) -> torchvision.transforms:
     transformer = custom_transformer()
   elif encoder_name == Encoders.UNI2.value:
     from encoders.uni2 import custom_transformer
+    transformer = custom_transformer()
+  elif encoder_name == Encoders.CTRANSPATH.value:
+    from encoders.ctranspath import custom_transformer
     transformer = custom_transformer()
   else:
     raise NotImplementedError(f'Transformer for \'{encoder_name}\' is not implemented, yet!')

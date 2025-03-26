@@ -171,13 +171,12 @@ def load_pretrained_weights(encoder, name):
   return encoder
 
 def custom_transformer():
-  mean = (0.485, 0.456, 0.406)
-  std = (0.229, 0.224, 0.225)
-
-  x = transforms.Compose([
+  transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
-    transforms.Normalize(mean = mean, std = std)
+    transforms.Normalize(
+      mean = (0.485, 0.456, 0.406),
+      std = (0.229, 0.224, 0.225)
+    ),
   ])
-
-  return x
+  return transform

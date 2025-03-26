@@ -6,4 +6,5 @@ class Encoders(Enum):
   RESNET50 = 'resnet50'     # implemented, tested
   RESNET101 = 'resnet101'   # implemented, tested
   RESNET152 = 'resnet152'   # implemented, tested
-  UNI2 = 'uni2'
+  UNI2 = 'uni2'             # implemented, tested
+  CTRANSPATH = 'ctranspath' # implemented, tested
