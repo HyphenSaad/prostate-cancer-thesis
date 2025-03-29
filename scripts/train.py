@@ -37,6 +37,7 @@ CONFIG = {
   'max_epochs': 10,
   'start_epoch': -1,
   'end_epoch': -1,
+  'kaggle_feature_path': None,
   'dataset_info_csv': os.path.join(DATASET_BASE_DIRECTORY, DATASET_INFO_FILE_NAME),
   'directories': {
     'save_base_directory': os.path.join(OUTPUT_BASE_DIRECTORY, 'train'),
@@ -75,6 +76,7 @@ def show_configs():
   logger.text(f"> Max Epochs: {CONFIG['max_epochs']}")
   logger.text(f"> Start Epoch: {CONFIG['start_epoch']}")
   logger.text(f"> End Epoch: {CONFIG['end_epoch']}")
+  logger.text(f"> Kaggle Feature Path: {CONFIG['kaggle_feature_path']}")
   logger.text(f"> Dataset Info CSV: {CONFIG['dataset_info_csv']}")
   logger.text(f"> Verbose: {CONFIG['verbose']}")
   logger.empty_line()
@@ -160,6 +162,12 @@ def load_arguments():
     help=f"End epoch (default: {CONFIG['end_epoch']})"
   )
   parser.add_argument(
+    "--kaggle-feature-path",
+    type=str,
+    default=CONFIG['kaggle_feature_path'],
+    help=f"Kaggle feature path (default: {CONFIG['kaggle_feature_path']})"
+  )
+  parser.add_argument(
     "--dataset-info-csv",
     type=str,
     default=CONFIG['dataset_info_csv'],
@@ -194,6 +202,7 @@ def load_arguments():
   CONFIG['start_epoch'] = args.start_epoch
   CONFIG['end_epoch'] = args.end_epoch
   CONFIG['dataset_info_csv'] = args.dataset_info_csv
+  CONFIG['kaggle_feature_path'] = args.kaggle_feature_path
   CONFIG['verbose'] = args.verbose
   
   output_base_dir = args.output_base_directory
@@ -229,6 +238,7 @@ def main():
     label_column = 'isup_grade',
     label_dict = { '0': 0, '1': 1, '2': 2, '3': 3, '4': 4, '5': 5 },
     verbose = CONFIG['verbose'],
+    kaggle_feature_path = CONFIG['kaggle_feature_path']
   )
   
   all_test_auc = []

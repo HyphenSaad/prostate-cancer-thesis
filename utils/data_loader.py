@@ -254,6 +254,7 @@ class GenericMILDataset(GenericWSIClassificationDataset):
     self.extract_patches_dir = extract_patches_dir
     self.patches_dir = patches_dir
     self.features_pt_directory = features_pt_directory
+    self.kaggle_feature_path = kwargs.get('kaggle_feature_path', None)
 
   def __getitem__(self, index):
     slide_id = self.slide_data['slide_id'][index]
@@ -287,9 +288,15 @@ class GenericMILDataset(GenericWSIClassificationDataset):
         img = Image.open(path).convert('RGB')
         img_list.append(img)
       return img_list
+
+    if self.kaggle_feature_path:
+      self.features_pt_directory = self.kaggle_feature_path
+    else:
+      raise NotImplementedError('kaggle_feature_path is not set. Please set it to the correct path.')
+
     
     # full_path = os.path.join(self.features_pt_directory, self.backbone, '{}.pt'.format(slide_id))
-    self.features_pt_directory = f'/kaggle/input/{self.backbone}-features-512x512-50-overlap-panda/{self.backbone}'
+    # self.features_pt_directory = f'/kaggle/input/{self.backbone}-features-512x512-50-overlap-panda/{self.backbone}'
     full_path = os.path.join(self.features_pt_directory, '{}.pt'.format(slide_id))
     try:
       features = torch.load(full_path)
