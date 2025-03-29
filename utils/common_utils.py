@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+import copy
 
 
 class AccuracyLogger(object):
@@ -42,13 +43,19 @@ class EarlyStopping:
     self.best_score = None
     self.early_stop = False
     self.val_loss_min = np.inf
+    self.best_epoch = -1
+    self.best_model_state = None
 
   def __call__(self, epoch, val_loss, model, ckpt_name = 'checkpoint.pt'):
     score = -val_loss
 
     if self.best_score is None:
       self.best_score = score
+      self.best_epoch = epoch
       self.save_checkpoint(val_loss, model, ckpt_name)
+      # Store a copy of the best model state dict for recovery
+      if not hasattr(model, 'save_model'):
+        self.best_model_state = copy.deepcopy(model.state_dict())
     elif score < self.best_score:
       self.counter += 1
       if self.verbose: print(f'EarlyStopping counter: {self.counter} out of {self.patience}')
@@ -56,7 +63,11 @@ class EarlyStopping:
         self.early_stop = True
     else:
       self.best_score = score
+      self.best_epoch = epoch
       self.save_checkpoint(val_loss, model, ckpt_name)
+      # Update best model state
+      if not hasattr(model, 'save_model'):
+        self.best_model_state = copy.deepcopy(model.state_dict())
       self.counter = 0
 
   def save_checkpoint(self, val_loss, model, ckpt_name):
@@ -70,3 +81,12 @@ class EarlyStopping:
       torch.save(model.state_dict(), ckpt_name)
     
     self.val_loss_min = val_loss
+
+  def restore_best_weights(self, model):
+    """Restore model to best weights if available"""
+    if self.best_model_state is not None:
+      if self.verbose:
+        print(f'Restoring model to best epoch ({self.best_epoch+1}) with val_loss: {self.val_loss_min:.6f}')
+      model.load_state_dict(self.best_model_state)
+      return True
+    return False

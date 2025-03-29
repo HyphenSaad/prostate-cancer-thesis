@@ -10,6 +10,8 @@ from sklearn.metrics import precision_score, recall_score, cohen_kappa_score, co
 from torch.utils.tensorboard.writer import SummaryWriter
 from tqdm import tqdm
 import shutil
+import random
+import pickle
 
 from mil_models import find_mil_model
 from utils.common_utils import EarlyStopping, AccuracyLogger
@@ -193,14 +195,44 @@ class TrainEngine:
     return optimizer
 
   def init_data_loaders(self):
+    # Save the current random states before creating dataloaders
+    torch_rng_state = torch.get_rng_state()
+    numpy_rng_state = np.random.get_state()
+    python_rng_state = random.getstate()
+    
+    # Create a fixed generator with a specific seed for reproducibility
+    g = torch.Generator()
+    g.manual_seed(42)  # Use a fixed seed for reproducibility
+    
     train_loader = get_split_loader(
       self.train_split,
       training = True,
       weighted = self.weighted_sample,
-      batch_size = self.batch_size
+      batch_size = self.batch_size,
+      generator = g  # Use the fixed generator
     )
-    val_loader = get_split_loader(self.val_split)
-    test_loader = get_split_loader(self.test_split)
+    
+    # Create separate generators for validation and test with different but fixed seeds
+    g_val = torch.Generator()
+    g_val.manual_seed(43)
+    val_loader = get_split_loader(self.val_split, generator=g_val)
+    
+    g_test = torch.Generator()
+    g_test.manual_seed(44)
+    test_loader = get_split_loader(self.test_split, generator=g_test)
+    
+    # Store the generator states to ensure repeatability
+    self.dataloader_generators = {
+      'train': g.get_state(),
+      'val': g_val.get_state(),
+      'test': g_test.get_state()
+    }
+    
+    # Restore the random states after creating dataloaders
+    torch.set_rng_state(torch_rng_state)
+    np.random.set_state(numpy_rng_state)
+    random.setstate(python_rng_state)
+    
     return train_loader, val_loader, test_loader
 
   def train_model(self, fold):
@@ -221,7 +253,20 @@ class TrainEngine:
         raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
       
       self.logger.info(f"Resuming training from epoch {start_epoch}", timestamp=True)
-      checkpoint = torch.load(checkpoint_path)
+      
+      # Load checkpoint with map_location to handle device changes properly
+      checkpoint = torch.load(checkpoint_path, map_location=self.device)
+      
+      # Verify configuration consistency
+      if 'config' in checkpoint:
+        config_mismatch = False
+        for key, value in checkpoint['config'].items():
+          if hasattr(self, key) and getattr(self, key) != value:
+            self.logger.warning(f"Configuration mismatch for {key}: checkpoint has {value}, current is {getattr(self, key)}")
+            config_mismatch = True
+        
+        if config_mismatch:
+          self.logger.warning("Configuration differences detected! This may cause inconsistent results.")
       
       # Load model state
       if 'model_state_dict' in checkpoint:
@@ -240,6 +285,70 @@ class TrainEngine:
       if 'early_stopping_state' in checkpoint:
         self.early_stopping.__dict__.update(checkpoint['early_stopping_state'])
         self.logger.info("Early stopping state loaded successfully")
+      
+      # Load learning rate scheduler state if it exists
+      if 'lr_scheduler_state_dict' in checkpoint and self.call_scheduler is not None and hasattr(self.call_scheduler, 'load_state_dict'):
+        self.call_scheduler.load_state_dict(checkpoint['lr_scheduler_state_dict'])
+        self.logger.info("Learning rate scheduler state loaded successfully")
+      
+      # Restore dataloader generators if available
+      if 'dataloader_generators' in checkpoint:
+        self.dataloader_generators = checkpoint['dataloader_generators']
+        # Recreate data loaders with these generators to ensure consistency
+        g_train = torch.Generator()
+        g_train.set_state(self.dataloader_generators['train'])
+        g_val = torch.Generator()
+        g_val.set_state(self.dataloader_generators['val'])
+        g_test = torch.Generator()
+        g_test.set_state(self.dataloader_generators['test'])
+        
+        # Recreate the dataloaders
+        self.train_loader = get_split_loader(
+          self.train_split,
+          training = True,
+          weighted = self.weighted_sample,
+          batch_size = self.batch_size,
+          generator = g_train
+        )
+        self.val_loader = get_split_loader(self.val_split, generator=g_val)
+        self.test_loader = get_split_loader(self.test_split, generator=g_test)
+        self.logger.info("Dataloader generators restored successfully")
+      
+      # Restore random states to ensure reproducibility
+      if 'torch_rng_state' in checkpoint:
+        torch.set_rng_state(checkpoint['torch_rng_state'])
+      
+      if 'torch_cuda_rng_state' in checkpoint and torch.cuda.is_available():
+        torch.cuda.set_rng_state(checkpoint['torch_cuda_rng_state'])
+      
+      if 'numpy_rng_state' in checkpoint:
+        np.random.set_state(checkpoint['numpy_rng_state'])
+      
+      if 'python_rng_state' in checkpoint:
+        random.setstate(checkpoint['python_rng_state'])
+      
+      # Restore dataloader state if possible
+      if ('train_dataloader_rng_state' in checkpoint and 
+          hasattr(self.train_loader, 'batch_sampler') and 
+          hasattr(self.train_loader.batch_sampler, 'sampler') and
+          hasattr(self.train_loader.batch_sampler.sampler, 'generator')):
+        self.train_loader.batch_sampler.sampler.generator.set_state(
+            checkpoint['train_dataloader_rng_state']
+        )
+      
+      self.logger.info("All states restored successfully for reproducible resuming")
+      
+      # Load metrics if available
+      metrics_path = os.path.join(self.epoch_checkpoints_dir, f"epoch_{start_epoch-1}_metrics.pkl")
+      if os.path.exists(metrics_path):
+        with open(metrics_path, 'rb') as f:
+          metrics = pickle.load(f)
+          self.logger.info(f"Previous epoch metrics - Train loss: {metrics['train_loss']:.4f}, Val loss: {metrics['val_loss']:.4f}")
+          
+          # Restore metric attributes to maintain state
+          for key, value in metrics.items():
+              if key != 'epoch':
+                  setattr(self, key, value)
     
     # Determine end epoch
     end_epoch = self.max_epochs
@@ -247,9 +356,17 @@ class TrainEngine:
       end_epoch = self.end_epoch
       self.logger.info(f"Training will end at epoch {end_epoch}")
     
+    # Initialize data for epoch recording
+    if not hasattr(self, 'epoch_metrics'):
+        self.epoch_metrics = []
+    
     # Run training loop
     for epoch in range(start_epoch, end_epoch):
       self.logger.info(f"Starting epoch {epoch+1}/{end_epoch}", timestamp=True)
+      
+      # Record starting random states for debugging
+      initial_torch_state = torch.get_rng_state().clone()
+      initial_numpy_state = np.random.get_state()[1].copy()
       
       # Run training for this epoch
       train_loop_func(epoch)
@@ -257,12 +374,26 @@ class TrainEngine:
       # Validate and get early stopping decision
       stop = validate_func(epoch)
       
-      # Save epoch checkpoint
+      # Save epoch checkpoint with ALL necessary states
       self.save_epoch_checkpoint(epoch)
+      
+      # Record epoch metrics
+      epoch_metric = {
+          'epoch': epoch+1,
+          'train_loss': getattr(self, 'train_loss', None),
+          'val_loss': getattr(self, 'val_loss', None),
+          'val_auc': getattr(self, 'val_auc', None)
+      }
+      self.epoch_metrics.append(epoch_metric)
       
       if stop: 
         self.logger.warning("Early stopping triggered", timestamp=True)
         break
+    
+    # Save the complete training history
+    history_path = os.path.join(self.epoch_checkpoints_dir, "training_history.pkl")
+    with open(history_path, 'wb') as f:
+        pickle.dump(self.epoch_metrics, f)
     
     checkpoint_path = os.path.join(self.result_dir, "s_{}_checkpoint.pt".format(fold))
     msg = self.model.load_state_dict(torch.load(checkpoint_path))
@@ -306,30 +437,70 @@ class TrainEngine:
     """Save a comprehensive checkpoint for the specified epoch"""
     checkpoint_path = os.path.join(self.epoch_checkpoints_dir, f"epoch_{epoch}_checkpoint.pt")
     
+    # Save all random states to ensure reproducibility
+    torch_rng_state = torch.get_rng_state()
+    torch_cuda_rng_state = torch.cuda.get_rng_state() if torch.cuda.is_available() else None
+    numpy_rng_state = np.random.get_state()
+    python_rng_state = random.getstate()
+    
     # Create checkpoint dictionary with all necessary states
     checkpoint = {
       'epoch': epoch,
       'model_state_dict': self.model.state_dict(),
       'optimizer_state_dict': self.optimizer.state_dict(),
-      'early_stopping_state': self.early_stopping.__dict__
+      'early_stopping_state': self.early_stopping.__dict__,
+      'torch_rng_state': torch_rng_state,
+      'torch_cuda_rng_state': torch_cuda_rng_state,
+      'numpy_rng_state': numpy_rng_state,
+      'python_rng_state': python_rng_state,
+      'dataloader_generators': self.dataloader_generators
+    }
+    
+    # Save learning rate scheduler state if it exists
+    if self.call_scheduler is not None and hasattr(self.call_scheduler, 'state_dict'):
+      checkpoint['lr_scheduler_state_dict'] = self.call_scheduler.state_dict()
+    
+    # Also save the current batch sampler states for more precise restoration
+    if hasattr(self.train_loader, 'batch_sampler') and hasattr(self.train_loader.batch_sampler, 'sampler'):
+      if hasattr(self.train_loader.batch_sampler.sampler, 'generator'):
+        checkpoint['train_dataloader_rng_state'] = self.train_loader.batch_sampler.sampler.generator.get_state()
+    
+    # Save configuration parameters to ensure consistency when resuming
+    checkpoint['config'] = {
+      'mil_model_name': self.mil_model_name,
+      'optimizer_name': self.optimizer_name,
+      'learning_rate': self.learning_rate,
+      'regularization': self.regularization,
+      'weighted_sample': self.weighted_sample,
+      'batch_size': self.batch_size,
+      'max_epochs': self.max_epochs,
+      'in_dim': self.in_dim,
+      'n_classes': self.n_classes,
+      'drop_out': self.drop_out,
+      'bag_loss': self.bag_loss
     }
     
     # Save the checkpoint
     torch.save(checkpoint, checkpoint_path)
     self.logger.info(f"Saved epoch {epoch+1} checkpoint to {checkpoint_path}")
     
-    # Also save metrics for this epoch
-    metrics_path = os.path.join(self.epoch_checkpoints_dir, f"epoch_{epoch}_metrics.csv")
+    # Also save metrics and other important data for this epoch
+    metrics_path = os.path.join(self.epoch_checkpoints_dir, f"epoch_{epoch}_metrics.pkl")
     metrics = {
       'epoch': epoch+1,
       'train_loss': getattr(self, 'train_loss', None),
       'train_error': getattr(self, 'train_error', None),
+      'train_acc': getattr(self, 'train_acc', None),
       'val_loss': getattr(self, 'val_loss', None),
       'val_error': getattr(self, 'val_error', None),
-      'val_auc': getattr(self, 'val_auc', None)
+      'val_auc': getattr(self, 'val_auc', None),
+      'val_f1': getattr(self, 'val_f1', None),
+      'val_precision': getattr(self, 'val_precision', None),
+      'val_recall': getattr(self, 'val_recall', None)
     }
-    pd.DataFrame([metrics]).to_csv(metrics_path, index=False)
-    
+    with open(metrics_path, 'wb') as f:
+      pickle.dump(metrics, f)
+
   def train_loop_subtyping(self, epoch):   
     self.model.train()
     acc_logger = AccuracyLogger(n_classes = self.n_classes)
@@ -455,6 +626,7 @@ class TrainEngine:
     # Store metrics for epoch checkpoint
     self.train_loss = train_loss
     self.train_error = train_error
+    self.train_acc = train_acc
 
   def validate_subtyping(self, epoch):
     self.model.eval()
@@ -633,6 +805,12 @@ class TrainEngine:
     self.val_loss = val_loss
     self.val_error = val_error
     self.val_auc = auc
+    self.val_f1 = metrics['f1_macro']
+    self.val_precision = metrics['precision_macro'] 
+    self.val_recall = metrics['recall_macro']
+    
+    # Record the full metrics dict for more detailed analysis
+    self.val_metrics = metrics
 
     # val_error is better than val_loss
     self.early_stopping(epoch, val_error, self.model, ckpt_name = os.path.join(self.result_dir, "s_{}_checkpoint.pt".format(self.fold)))
