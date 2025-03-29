@@ -305,7 +305,7 @@ def main():
 
   logger.info("Saving summary results...")
   final_df = pd.DataFrame({
-    'folds': folds,
+    'folds': np.arange(0, CONFIG['k_fold_end'], 1),
     'test_auc': all_test_auc, 
     'val_auc': all_val_auc,
     'test_acc': all_test_acc,
