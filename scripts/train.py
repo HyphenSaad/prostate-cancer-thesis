@@ -228,22 +228,22 @@ def main():
 
   if CONFIG['k_fold_start'] != -1 and CONFIG['k_fold_end'] != -1:
     for fold in range(0, CONFIG['k_fold']):
-      filename = os.path.join(CONFIG['directories']['save_base_directory'], 'split_{}_results.pkl'.format(fold))
+      filename = os.path.join(CONFIG['directories']['save_base_directory'], 'split_{}_metrics.pkl'.format(fold))
       if os.path.exists(filename):
         logger.info("Loading results from fold {}...", fold)
         results = load_pkl(filename)
-        all_test_auc.append(results['test_auc'])
-        all_val_auc.append(results['val_auc'])
-        all_test_acc.append(results['test_acc'])
-        all_val_acc.append(results['val_acc'])
-        all_test_f1.append(results['test_f1'])
-        all_val_f1.append(results['val_f1'])
-        all_test_precision.append(results['test_precision'])
-        all_val_precision.append(results['val_precision'])
-        all_test_recall.append(results['test_recall'])
-        all_val_recall.append(results['val_recall'])
-        all_test_kappa.append(results['test_kappa'])
-        all_val_kappa.append(results['val_kappa'])
+        all_test_auc.append(results['test']['auc'])
+        all_val_auc.append(results['val']['auc'])
+        all_test_acc.append(results['test']['accuracy'])
+        all_val_acc.append(results['val']['accuracy'])
+        all_test_f1.append(results['test']['f1_macro'])
+        all_val_f1.append(results['val']['f1_macro'])
+        all_test_precision.append(results['test']['precision_macro'])
+        all_val_precision.append(results['val']['precision_macro'])
+        all_test_recall.append(results['test']['recall_macro'])
+        all_val_recall.append(results['val']['recall_macro'])
+        all_test_kappa.append(results['test']['cohens_kappa'])
+        all_val_kappa.append(results['val']['cohens_kappa'])
 
   for fold in folds:
     logger.info("Training fold {}/{}...", fold + 1, CONFIG['k_fold'])
