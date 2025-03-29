@@ -9,6 +9,7 @@ from sklearn.metrics import auc as calc_auc
 from sklearn.metrics import precision_score, recall_score, cohen_kappa_score, confusion_matrix, classification_report, accuracy_score
 from torch.utils.tensorboard.writer import SummaryWriter
 from tqdm import tqdm
+import shutil
 
 from mil_models import find_mil_model
 from utils.common_utils import EarlyStopping, AccuracyLogger
@@ -85,6 +86,11 @@ class TrainEngine:
       os.path.join(self.result_dir, 'splits_{}.csv'.format(fold))
     )
 
+    self.epoch_checkpoints_dir = os.path.join(self.result_dir, f"epoch_checkpoints_{fold}")
+    if not os.path.exists(self.epoch_checkpoints_dir):
+      os.makedirs(self.epoch_checkpoints_dir)
+      self.logger.info(f"Created epoch checkpoints directory at {self.epoch_checkpoints_dir}")
+    
     self.init_logger()
 
     self.call_scheduler = self.get_learning_rate_scheduler()
@@ -110,6 +116,19 @@ class TrainEngine:
         **extra_args
       )
       
+    # Verify epoch settings
+    if (self.start_epoch > -1 and self.end_epoch == -1) or (self.start_epoch == -1 and self.end_epoch > -1):
+      self.logger.error("Both start_epoch and end_epoch must be provided if either one is specified")
+      raise ValueError("Both start_epoch and end_epoch must be provided together")
+    
+    if self.start_epoch > self.end_epoch and self.start_epoch > -1:
+      self.logger.error(f"start_epoch ({self.start_epoch}) cannot be greater than end_epoch ({self.end_epoch})")
+      raise ValueError(f"start_epoch ({self.start_epoch}) cannot be greater than end_epoch ({self.end_epoch})")
+      
+    if self.end_epoch > self.max_epochs:
+      self.logger.warning(f"end_epoch ({self.end_epoch}) is greater than max_epochs ({self.max_epochs}), setting end_epoch to max_epochs")
+      self.end_epoch = self.max_epochs
+
   def init_logger(self):
     self.logger.info('Training Fold {}!'.format(self.fold), timestamp=True)
     
@@ -190,9 +209,57 @@ class TrainEngine:
     test_func = self.summary_subtyping
 
     self.logger.info("Starting training process", timestamp=True)
-    for epoch in range(self.max_epochs):
+    
+    # Handle resuming from a specific epoch
+    start_epoch = 0
+    if self.start_epoch > 0:
+      start_epoch = self.start_epoch
+      checkpoint_path = os.path.join(self.epoch_checkpoints_dir, f"epoch_{start_epoch-1}_checkpoint.pt")
+      
+      if not os.path.exists(checkpoint_path):
+        self.logger.error(f"Cannot resume from epoch {start_epoch}. Checkpoint file not found: {checkpoint_path}")
+        raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
+      
+      self.logger.info(f"Resuming training from epoch {start_epoch}", timestamp=True)
+      checkpoint = torch.load(checkpoint_path)
+      
+      # Load model state
+      if 'model_state_dict' in checkpoint:
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.logger.info("Model state loaded successfully")
+      else:
+        self.logger.error("Model state not found in checkpoint")
+        raise KeyError("Model state not found in checkpoint")
+      
+      # Load optimizer state
+      if 'optimizer_state_dict' in checkpoint:
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        self.logger.info("Optimizer state loaded successfully")
+      
+      # Load early stopping state
+      if 'early_stopping_state' in checkpoint:
+        self.early_stopping.__dict__.update(checkpoint['early_stopping_state'])
+        self.logger.info("Early stopping state loaded successfully")
+    
+    # Determine end epoch
+    end_epoch = self.max_epochs
+    if self.end_epoch > 0:
+      end_epoch = self.end_epoch
+      self.logger.info(f"Training will end at epoch {end_epoch}")
+    
+    # Run training loop
+    for epoch in range(start_epoch, end_epoch):
+      self.logger.info(f"Starting epoch {epoch+1}/{end_epoch}", timestamp=True)
+      
+      # Run training for this epoch
       train_loop_func(epoch)
+      
+      # Validate and get early stopping decision
       stop = validate_func(epoch)
+      
+      # Save epoch checkpoint
+      self.save_epoch_checkpoint(epoch)
+      
       if stop: 
         self.logger.warning("Early stopping triggered", timestamp=True)
         break
@@ -235,6 +302,34 @@ class TrainEngine:
     
     return results_dict, test_auc, val_auc, 1-test_error, 1-val_error, test_f1, val_f1, test_metrics, val_metrics
 
+  def save_epoch_checkpoint(self, epoch):
+    """Save a comprehensive checkpoint for the specified epoch"""
+    checkpoint_path = os.path.join(self.epoch_checkpoints_dir, f"epoch_{epoch}_checkpoint.pt")
+    
+    # Create checkpoint dictionary with all necessary states
+    checkpoint = {
+      'epoch': epoch,
+      'model_state_dict': self.model.state_dict(),
+      'optimizer_state_dict': self.optimizer.state_dict(),
+      'early_stopping_state': self.early_stopping.__dict__
+    }
+    
+    # Save the checkpoint
+    torch.save(checkpoint, checkpoint_path)
+    self.logger.info(f"Saved epoch {epoch+1} checkpoint to {checkpoint_path}")
+    
+    # Also save metrics for this epoch
+    metrics_path = os.path.join(self.epoch_checkpoints_dir, f"epoch_{epoch}_metrics.csv")
+    metrics = {
+      'epoch': epoch+1,
+      'train_loss': getattr(self, 'train_loss', None),
+      'train_error': getattr(self, 'train_error', None),
+      'val_loss': getattr(self, 'val_loss', None),
+      'val_error': getattr(self, 'val_error', None),
+      'val_auc': getattr(self, 'val_auc', None)
+    }
+    pd.DataFrame([metrics]).to_csv(metrics_path, index=False)
+    
   def train_loop_subtyping(self, epoch):   
     self.model.train()
     acc_logger = AccuracyLogger(n_classes = self.n_classes)
@@ -356,6 +451,10 @@ class TrainEngine:
 
     if self.call_scheduler is not None:
       self.call_scheduler()
+    
+    # Store metrics for epoch checkpoint
+    self.train_loss = train_loss
+    self.train_error = train_error
 
   def validate_subtyping(self, epoch):
     self.model.eval()
@@ -529,6 +628,11 @@ class TrainEngine:
             self.writer.add_scalar('val/class_{}_precision'.format(i), metrics['precision_per_class'][i], epoch)
           if i < len(metrics['recall_per_class']):
             self.writer.add_scalar('val/class_{}_recall'.format(i), metrics['recall_per_class'][i], epoch)
+
+    # Store metrics for epoch checkpoint
+    self.val_loss = val_loss
+    self.val_error = val_error
+    self.val_auc = auc
 
     # val_error is better than val_loss
     self.early_stopping(epoch, val_error, self.model, ckpt_name = os.path.join(self.result_dir, "s_{}_checkpoint.pt".format(self.fold)))

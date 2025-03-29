@@ -208,6 +208,19 @@ def main():
   logger.draw_header("Train MIL Model")
   load_arguments()
   
+  # Validate start_epoch and end_epoch
+  if (CONFIG['start_epoch'] > -1 and CONFIG['end_epoch'] == -1) or (CONFIG['start_epoch'] == -1 and CONFIG['end_epoch'] > -1):
+    logger.error("Both --start-epoch and --end-epoch must be provided if either one is specified")
+    sys.exit(1)
+  
+  if CONFIG['start_epoch'] > CONFIG['end_epoch'] and CONFIG['start_epoch'] > -1:
+    logger.error(f"start_epoch ({CONFIG['start_epoch']}) cannot be greater than end_epoch ({CONFIG['end_epoch']})")
+    sys.exit(1)
+  
+  if CONFIG['end_epoch'] > CONFIG['max_epochs']:
+    logger.warning(f"end_epoch ({CONFIG['end_epoch']}) is greater than max_epochs ({CONFIG['max_epochs']}), setting end_epoch to max_epochs")
+    CONFIG['end_epoch'] = CONFIG['max_epochs']
+  
   logger.info("Training MIL model...")
   start_time = time.time()
 
@@ -276,7 +289,14 @@ def main():
       from_id = False, 
       csv_path='{}/splits_{}.csv'.format(CONFIG['directories']['create_splits_directory'], fold)
     )
-
+    
+    # Create epoch checkpoints directory if starting/resuming training
+    epoch_checkpoints_dir = os.path.join(CONFIG['directories']['save_base_directory'], f"epoch_checkpoints_{fold}")
+    if CONFIG['start_epoch'] > 0 and not os.path.exists(epoch_checkpoints_dir):
+      logger.error(f"Cannot resume from epoch {CONFIG['start_epoch']} for fold {fold}. Directory not found: {epoch_checkpoints_dir}")
+      logger.info("Skipping fold {}", fold)
+      continue
+    
     drop_out = 0.25 if CONFIG['drop_out'] else 0.0
     logger.info("Initializing training engine...")
     train_engine = TrainEngine(
@@ -295,6 +315,11 @@ def main():
     )
 
     logger.info("Starting model training for fold {}...", fold)
+    
+    # Add more descriptive message about epoch range
+    if CONFIG['start_epoch'] > 0 and CONFIG['end_epoch'] > 0:
+      logger.info(f"Training will run from epoch {CONFIG['start_epoch']+1} to {CONFIG['end_epoch']} for fold {fold}")
+      
     results, test_auc, val_auc, test_acc, val_acc, test_f1, val_f1, test_metrics, val_metrics = train_engine.train_model(fold)
     all_test_auc.append(test_auc)
     all_val_auc.append(val_auc)
