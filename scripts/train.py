@@ -228,6 +228,11 @@ def main():
   start_k_fold = CONFIG['k_fold_start'] if CONFIG['k_fold_start'] != -1 else 0
   end_k_fold = CONFIG['k_fold_end'] if CONFIG['k_fold_end'] != -1 else CONFIG['k_fold']
   folds = np.arange(start_k_fold, end_k_fold, 1)
+
+  if CONFIG['kaggle_feature_path'] is not None:
+    __path = os.path.join(os.getcwd(), 'config.txt')
+    with open(__path, 'w') as f:
+      f.write(CONFIG['kaggle_feature_path'])
   
   logger.info("Loading dataset...")
   dataset = GenericMILDataset(
@@ -237,8 +242,7 @@ def main():
     csv_path = CONFIG['dataset_info_csv'],
     label_column = 'isup_grade',
     label_dict = { '0': 0, '1': 1, '2': 2, '3': 3, '4': 4, '5': 5 },
-    verbose = CONFIG['verbose'],
-    kaggle_feature_path = CONFIG['kaggle_feature_path']
+    verbose = CONFIG['verbose']
   )
   
   all_test_auc = []
@@ -382,6 +386,10 @@ def main():
   logger.info("Total processing time: {:.2f} seconds ({:.2f} minutes)", 
               total_time, total_time/60)
   logger.success("MIL model training completed successfully!")
+
+  __path = os.path.join(os.getcwd(), 'config.txt')
+  if os.path.exists(__path):
+    os.remove(__path)
 
 if __name__ == '__main__':
   main()
