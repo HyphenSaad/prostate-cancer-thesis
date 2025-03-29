@@ -35,6 +35,8 @@ CONFIG = {
   'patch_size': 512,
   'in_dim': 1024,
   'max_epochs': 10,
+  'start_epoch': -1,
+  'end_epoch': -1,
   'dataset_info_csv': os.path.join(DATASET_BASE_DIRECTORY, DATASET_INFO_FILE_NAME),
   'directories': {
     'save_base_directory': os.path.join(OUTPUT_BASE_DIRECTORY, 'train'),
@@ -71,6 +73,8 @@ def show_configs():
   logger.text(f"> Patch Size: {CONFIG['patch_size']}")
   logger.text(f"> Input Dimension: {CONFIG['in_dim']}")
   logger.text(f"> Max Epochs: {CONFIG['max_epochs']}")
+  logger.text(f"> Start Epoch: {CONFIG['start_epoch']}")
+  logger.text(f"> End Epoch: {CONFIG['end_epoch']}")
   logger.text(f"> Dataset Info CSV: {CONFIG['dataset_info_csv']}")
   logger.text(f"> Verbose: {CONFIG['verbose']}")
   logger.empty_line()
@@ -144,6 +148,18 @@ def load_arguments():
     help=f"Maximum epochs (default: {CONFIG['max_epochs']})"
   )
   parser.add_argument(
+    "--start-epoch",
+    type=int,
+    default=CONFIG['start_epoch'],
+    help=f"Start epoch (default: {CONFIG['start_epoch']})"
+  )
+  parser.add_argument(
+    "--end-epoch",
+    type=int,
+    default=CONFIG['end_epoch'],
+    help=f"End epoch (default: {CONFIG['end_epoch']})"
+  )
+  parser.add_argument(
     "--dataset-info-csv",
     type=str,
     default=CONFIG['dataset_info_csv'],
@@ -175,6 +191,8 @@ def load_arguments():
   CONFIG['patch_size'] = args.patch_size
   CONFIG['in_dim'] = args.in_dim
   CONFIG['max_epochs'] = args.max_epochs
+  CONFIG['start_epoch'] = args.start_epoch
+  CONFIG['end_epoch'] = args.end_epoch
   CONFIG['dataset_info_csv'] = args.dataset_info_csv
   CONFIG['verbose'] = args.verbose
   
@@ -269,6 +287,8 @@ def main():
       mil_model_name = CONFIG['mil_model'],
       learning_rate = CONFIG['learning_rate'],
       max_epochs = CONFIG['max_epochs'],
+      start_epoch = CONFIG['start_epoch'],
+      end_epoch = CONFIG['end_epoch'],
       in_dim = CONFIG['in_dim'],
       n_classes = CONFIG['n_classes'],
       verbose = CONFIG['verbose'],

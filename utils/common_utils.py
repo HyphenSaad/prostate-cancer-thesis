@@ -70,3 +70,19 @@ class EarlyStopping:
       torch.save(model.state_dict(), ckpt_name)
     
     self.val_loss_min = val_loss
+
+  def get_state(self):
+    """Return a dictionary containing the state of the early stopping object"""
+    return {
+        'best_score': self.best_score,
+        'counter': self.counter,
+        'early_stop': self.early_stop,
+        'val_loss_min': self.val_loss_min
+    }
+    
+  def load_state(self, state_dict):
+    """Load the state of the early stopping object from a dictionary"""
+    self.best_score = state_dict['best_score']
+    self.counter = state_dict['counter']
+    self.early_stop = state_dict['early_stop']
+    self.val_loss_min = state_dict['val_loss_min']

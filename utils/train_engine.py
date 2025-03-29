@@ -49,6 +49,8 @@ class TrainEngine:
     in_dim,
     n_classes,
     drop_out,
+    start_epoch = -1,
+    end_epoch = -1,
     weighted_sample = False,
     optimizer_name = 'adam',
     regularization = 1e-5,
@@ -66,6 +68,8 @@ class TrainEngine:
     self.weighted_sample = weighted_sample
     self.batch_size = batch_size
     self.max_epochs = max_epochs
+    self.start_epoch = start_epoch
+    self.end_epoch = end_epoch
     self.in_dim = in_dim
     self.n_classes = n_classes
     self.drop_out = drop_out    
@@ -81,6 +85,28 @@ class TrainEngine:
       os.path.join(self.result_dir, 'splits_{}.csv'.format(fold))
     )
 
+    # Create epoch checkpoints directory
+    self.epoch_checkpoints_dir = os.path.join(self.result_dir, f"epoch_checkpoints_{fold}")
+    if not os.path.exists(self.epoch_checkpoints_dir):
+      os.makedirs(self.epoch_checkpoints_dir)
+    
+    # If start_epoch is specified, validate it
+    if self.start_epoch > 0:
+      if not os.path.exists(os.path.join(self.epoch_checkpoints_dir, f"epoch_{self.start_epoch-1}_checkpoint.pt")):
+        self.logger.warning(f"Cannot resume from epoch {self.start_epoch} as checkpoint file for epoch {self.start_epoch-1} doesn't exist")
+        self.start_epoch = 0
+      else:
+        self.logger.info(f"Will resume training from epoch {self.start_epoch}")
+    else:
+      self.start_epoch = 0
+      
+    # If end_epoch is -1, set it to max_epochs
+    if self.end_epoch == -1:
+      self.end_epoch = self.max_epochs
+    elif self.end_epoch > self.max_epochs:
+      self.logger.warning(f"Requested end_epoch {self.end_epoch} is greater than max_epochs {self.max_epochs}. Setting end_epoch to {self.max_epochs}.")
+      self.end_epoch = self.max_epochs
+    
     self.init_logger()
 
     self.call_scheduler = self.get_learning_rate_scheduler()
@@ -95,6 +121,10 @@ class TrainEngine:
     )
 
     self.train_loader, self.val_loader, self.test_loader = self.init_data_loaders()
+    
+    # Load checkpoint if resuming from a specific epoch
+    if self.start_epoch > 0:
+      self._load_epoch_checkpoint(self.start_epoch - 1)
 
     # core, if you implement your training framework, call setup to pass training hyperparameters.
     if hasattr(self.model, 'set_up'):
@@ -180,23 +210,92 @@ class TrainEngine:
     test_loader = get_split_loader(self.test_split)
     return train_loader, val_loader, test_loader
 
+  def _save_epoch_checkpoint(self, epoch, val_metrics=None):
+    """Save a complete checkpoint at the end of an epoch including optimizer state"""
+    checkpoint_path = os.path.join(self.epoch_checkpoints_dir, f"epoch_{epoch}_checkpoint.pt")
+    
+    checkpoint = {
+        'epoch': epoch,
+        'model_state_dict': self.model.state_dict(),
+        'optimizer_state_dict': self.optimizer.state_dict(),
+        'early_stopping_state': self.early_stopping.get_state()
+    }
+    
+    # Save validation metrics if available
+    if val_metrics is not None:
+        checkpoint['val_metrics'] = val_metrics
+        
+    if self.call_scheduler is not None and hasattr(self.call_scheduler, 'state_dict'):
+        checkpoint['scheduler_state_dict'] = self.call_scheduler.state_dict()
+        
+    torch.save(checkpoint, checkpoint_path)
+    self.logger.info(f"Saved epoch {epoch} checkpoint to {checkpoint_path}")
+    
+  def _load_epoch_checkpoint(self, epoch):
+    """Load a checkpoint from a specific epoch"""
+    checkpoint_path = os.path.join(self.epoch_checkpoints_dir, f"epoch_{epoch}_checkpoint.pt")
+    
+    if not os.path.exists(checkpoint_path):
+        self.logger.error(f"Checkpoint for epoch {epoch} not found at {checkpoint_path}")
+        return False
+        
+    self.logger.info(f"Loading checkpoint from epoch {epoch}...")
+    checkpoint = torch.load(checkpoint_path, map_location=self.device)
+    
+    # Load model state
+    self.model.load_state_dict(checkpoint['model_state_dict'])
+    
+    # Load optimizer state
+    self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    
+    # Load early stopping state if available
+    if 'early_stopping_state' in checkpoint:
+        self.early_stopping.load_state(checkpoint['early_stopping_state'])
+    
+    # Load scheduler state if available
+    if 'scheduler_state_dict' in checkpoint and self.call_scheduler is not None and hasattr(self.call_scheduler, 'load_state_dict'):
+        self.call_scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        
+    self.logger.success(f"Successfully loaded checkpoint from epoch {epoch}")
+    return True
+
   def train_model(self, fold):
     train_loop_func = self.train_loop_subtyping
     validate_func = self.validate_subtyping
     test_func = self.summary_subtyping
 
     self.logger.info("Starting training process", timestamp=True)
-    for epoch in range(self.max_epochs):
+    
+    # Initialize tracking variables for best model (used by early stopping)
+    best_val_error = float('inf')
+    best_epoch = -1
+    
+    # Training loop from start_epoch to end_epoch
+    for epoch in range(self.start_epoch, self.end_epoch):
+      # Train for this epoch
       train_loop_func(epoch)
-      stop = validate_func(epoch)
+      
+      # Validate and check for early stopping
+      metrics, stop = validate_func(epoch)
+      
+      # Save checkpoint for this epoch regardless of early stopping
+      self._save_epoch_checkpoint(epoch, val_metrics=metrics)
+      
+      # Update best model tracking
+      if metrics['error'] < best_val_error:
+        best_val_error = metrics['error']
+        best_epoch = epoch
+        self.logger.info(f"New best model at epoch {epoch+1} with validation error: {best_val_error:.4f}")
+      
       if stop: 
-        self.logger.warning("Early stopping triggered", timestamp=True)
+        self.logger.warning(f"Early stopping triggered at epoch {epoch+1}", timestamp=True)
         break
     
+    # Load the best model for final evaluation
     checkpoint_path = os.path.join(self.result_dir, "s_{}_checkpoint.pt".format(fold))
+    self.logger.info(f'Loading best model checkpoint from: {checkpoint_path}', timestamp=True)
     msg = self.model.load_state_dict(torch.load(checkpoint_path))
     
-    self.logger.info('Loading best model checkpoint from: {}'.format(checkpoint_path), timestamp=True)
     if self.verbose:
       self.logger.debug(msg)
     
@@ -432,6 +531,8 @@ class TrainEngine:
     
     # Calculate all metrics for the epoch
     metrics = {}
+    metrics['error'] = val_error
+    metrics['loss'] = val_loss
     
     # Accuracy from error
     metrics['accuracy'] = 1 - val_error
@@ -529,11 +630,7 @@ class TrainEngine:
     # val_error is better than val_loss
     self.early_stopping(epoch, val_error, self.model, ckpt_name = os.path.join(self.result_dir, "s_{}_checkpoint.pt".format(self.fold)))
     
-    if self.early_stopping.early_stop:
-      self.logger.warning("Early stopping triggered at epoch {}/{}".format(epoch+1, self.max_epochs))
-      return True
-    else:
-      return False
+    return metrics, self.early_stopping.early_stop
 
   def summary_subtyping(self, loader = None):
     if loader is None:
