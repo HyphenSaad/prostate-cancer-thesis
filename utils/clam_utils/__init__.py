@@ -86,38 +86,26 @@ def make_weights_for_balanced_classes_split(dataset):
 
 	return torch.DoubleTensor(weight)
 
-def get_split_loader(split_dataset, training=False, testing=False, weighted=False, batch_size=1, generator=None):
-    """
-    Get a data loader for a split dataset
-    Args:
-        split_dataset: Dataset to get loader for
-        training: Whether this is for training (enables shuffling)
-        testing: Whether this is for testing (disables shuffling)
-        weighted: Whether to use weighted sampling
-        batch_size: Batch size to use
-        generator: Random number generator to use for reproducibility
-    Returns:
-        DataLoader: DataLoader for the dataset
-    """
-    kwargs = {'num_workers': 4} if device.type == "cuda" else {}
-    if not testing and not training:
-        if weighted:
-            weights = make_weights_for_balanced_classes_split(split_dataset)
-            sampler = WeightedRandomSampler(weights, len(weights), generator=generator)
-            loader = DataLoader(split_dataset, batch_size=batch_size, sampler=sampler, **kwargs)
-        else:
-            loader = DataLoader(split_dataset, batch_size=batch_size, shuffle=True, generator=generator, **kwargs)
-    elif training:
-        if weighted:
-            weights = make_weights_for_balanced_classes_split(split_dataset)
-            sampler = WeightedRandomSampler(weights, len(weights), generator=generator)
-            loader = DataLoader(split_dataset, batch_size=batch_size, sampler=sampler, **kwargs)
-        else:
-            loader = DataLoader(split_dataset, batch_size=batch_size, shuffle=True, generator=generator, **kwargs)
-    else:
-        loader = DataLoader(split_dataset, batch_size=batch_size, shuffle=False, **kwargs)
-    
-    return loader
+def get_split_loader(split_dataset, training = False, testing = False, weighted = False, batch_size=1):
+	"""
+		return either the validation loader or training loader 
+	"""
+	kwargs = {'num_workers': 0} if device.type == "cuda" else {}
+	if not testing:
+		if training:
+			if weighted:
+				weights = make_weights_for_balanced_classes_split(split_dataset)
+				loader = DataLoader(split_dataset, batch_size=batch_size, sampler = WeightedRandomSampler(weights, len(weights)), collate_fn = collate_MIL, **kwargs)	
+			else:
+				loader = DataLoader(split_dataset, batch_size=batch_size, sampler = RandomSampler(split_dataset), collate_fn = collate_MIL, **kwargs)
+		else:
+			loader = DataLoader(split_dataset, batch_size=batch_size, sampler = SequentialSampler(split_dataset), collate_fn = collate_MIL, **kwargs)
+	
+	else:
+		ids = np.random.choice(np.arange(len(split_dataset), int(len(split_dataset)*0.1)), replace = False)
+		loader = DataLoader(split_dataset, batch_size=1, sampler = SubsetSequentialSampler(ids), collate_fn = collate_MIL, **kwargs )
+
+	return loader
 
 def calculate_error(Y_hat, Y):
 	error = 1. - Y_hat.float().eq(Y.float()).float().mean().item()

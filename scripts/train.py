@@ -208,26 +208,6 @@ def main():
   logger.draw_header("Train MIL Model")
   load_arguments()
   
-  # Validate start_epoch and end_epoch
-  if (CONFIG['start_epoch'] > -1 and CONFIG['end_epoch'] == -1) or (CONFIG['start_epoch'] == -1 and CONFIG['end_epoch'] > -1):
-    logger.error("Both --start-epoch and --end-epoch must be provided if either one is specified")
-    sys.exit(1)
-  
-  if CONFIG['start_epoch'] > CONFIG['end_epoch'] and CONFIG['start_epoch'] > -1:
-    logger.error(f"start_epoch ({CONFIG['start_epoch']}) cannot be greater than end_epoch ({CONFIG['end_epoch']})")
-    sys.exit(1)
-  
-  if CONFIG['end_epoch'] > CONFIG['max_epochs']:
-    logger.warning(f"end_epoch ({CONFIG['end_epoch']}) is greater than max_epochs ({CONFIG['max_epochs']}), setting end_epoch to max_epochs")
-    CONFIG['end_epoch'] = CONFIG['max_epochs']
-  
-  # More comprehensive validation for epoch resuming
-  if CONFIG['start_epoch'] > 0:
-    logger.info("Resuming training from epoch {}".format(CONFIG['start_epoch']))
-    # Verify that the user is aware of the potential implications
-    logger.warning("Note: For consistent results, ensure you're using the same hardware configuration, " 
-                  "batch sizes, and other hyperparameters as the original run.")
-  
   logger.info("Training MIL model...")
   start_time = time.time()
 
@@ -287,9 +267,7 @@ def main():
     logger.info("Training fold {}/{}...", fold + 1, CONFIG['k_fold'])
     fold_start_time = time.time()
     
-    # Important: We need to seed before every fold with the SAME seed
-    # This ensures consistency between full training and resumed training
-    seed_torch(seed=42)  # Use a fixed seed for reproducibility
+    seed_torch()
     
     logger.info("Setting up dataset split for fold {}...", fold)
     dataset_split = dataset.return_splits(
@@ -298,39 +276,7 @@ def main():
       from_id = False, 
       csv_path='{}/splits_{}.csv'.format(CONFIG['directories']['create_splits_directory'], fold)
     )
-    
-    # Enhanced checkpoint directory handling
-    epoch_checkpoints_dir = os.path.join(CONFIG['directories']['save_base_directory'], f"epoch_checkpoints_{fold}")
-    if CONFIG['start_epoch'] > 0:
-      # Check if checkpoint exists
-      checkpoint_path = os.path.join(epoch_checkpoints_dir, f"epoch_{CONFIG['start_epoch']-1}_checkpoint.pt")
-      if not os.path.exists(checkpoint_path):
-        logger.error(f"Cannot resume from epoch {CONFIG['start_epoch']} for fold {fold}. Checkpoint file not found: {checkpoint_path}")
-        logger.info("Skipping fold {}", fold)
-        continue
-      
-      # Verify checkpoint integrity
-      try:
-        checkpoint = torch.load(checkpoint_path, map_location='cpu')
-        required_keys = ['model_state_dict', 'optimizer_state_dict', 'early_stopping_state']
-        for key in required_keys:
-          if key not in checkpoint:
-            logger.error(f"Checkpoint is missing required key: {key}")
-            logger.info("Skipping fold {}", fold)
-            continue
-        logger.info(f"Checkpoint verification successful. Will resume from epoch {CONFIG['start_epoch']}")
-      except Exception as e:
-        logger.error(f"Error loading checkpoint: {str(e)}")
-        logger.info("Skipping fold {}", fold)
-        continue
-    
-    # Create epoch checkpoints directory if starting/resuming training
-    epoch_checkpoints_dir = os.path.join(CONFIG['directories']['save_base_directory'], f"epoch_checkpoints_{fold}")
-    if CONFIG['start_epoch'] > 0 and not os.path.exists(epoch_checkpoints_dir):
-      logger.error(f"Cannot resume from epoch {CONFIG['start_epoch']} for fold {fold}. Directory not found: {epoch_checkpoints_dir}")
-      logger.info("Skipping fold {}", fold)
-      continue
-    
+
     drop_out = 0.25 if CONFIG['drop_out'] else 0.0
     logger.info("Initializing training engine...")
     train_engine = TrainEngine(
@@ -349,24 +295,6 @@ def main():
     )
 
     logger.info("Starting model training for fold {}...", fold)
-    
-    # Add more descriptive message about epoch range
-    if CONFIG['start_epoch'] > 0 and CONFIG['end_epoch'] > 0:
-      logger.info(f"Training will run from epoch {CONFIG['start_epoch']+1} to {CONFIG['end_epoch']} for fold {fold}")
-      
-      # Verify training consistency with previous runs
-      metrics_path = os.path.join(epoch_checkpoints_dir, f"epoch_{CONFIG['start_epoch']-1}_metrics.pkl")
-      if os.path.exists(metrics_path):
-        try:
-          with open(metrics_path, 'rb') as f:
-            metrics = pickle.load(f)
-            logger.info(f"Resuming after epoch {CONFIG['start_epoch']} with previous metrics:")
-            logger.info(f"  Train loss: {metrics.get('train_loss', 'N/A')}")
-            logger.info(f"  Val loss: {metrics.get('val_loss', 'N/A')}")
-            logger.info(f"  Val AUC: {metrics.get('val_auc', 'N/A')}")
-        except Exception as e:
-          logger.warning(f"Could not load previous metrics: {str(e)}")
-    
     results, test_auc, val_auc, test_acc, val_acc, test_f1, val_f1, test_metrics, val_metrics = train_engine.train_model(fold)
     all_test_auc.append(test_auc)
     all_val_auc.append(val_auc)
