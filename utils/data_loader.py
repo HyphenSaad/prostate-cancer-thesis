@@ -17,6 +17,7 @@ class GenericWSIClassificationDataset(Dataset):
       label_dict = {},
       patient_voting = 'max',
       verbose = False,
+      **kwargs
     ):
       self.label_dict = label_dict
       self.num_classes = len(set(self.label_dict.values()))
