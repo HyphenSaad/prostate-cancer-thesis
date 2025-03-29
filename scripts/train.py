@@ -226,9 +226,8 @@ def main():
   all_test_kappa = []
   all_val_kappa = []
 
-  # load performance metrics from previous folds
   if CONFIG['k_fold_start'] != -1 and CONFIG['k_fold_end'] != -1:
-    for fold in folds:
+    for fold in range(0, CONFIG['k_fold']):
       filename = os.path.join(CONFIG['directories']['save_base_directory'], 'split_{}_results.pkl'.format(fold))
       if os.path.exists(filename):
         logger.info("Loading results from fold {}...", fold)
