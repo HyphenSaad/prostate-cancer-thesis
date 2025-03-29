@@ -289,7 +289,7 @@ class GenericMILDataset(GenericWSIClassificationDataset):
       return img_list
     
     # full_path = os.path.join(self.features_pt_directory, self.backbone, '{}.pt'.format(slide_id))
-    self.features_pt_directory = f'/kaggle/input/{self.backbone}-features-512x512-50-overlap-panda'
+    self.features_pt_directory = f'/kaggle/input/{self.backbone}-features-512x512-50-overlap-panda/{self.backbone}'
     full_path = os.path.join(self.features_pt_directory, '{}.pt'.format(slide_id))
     try:
       features = torch.load(full_path)
