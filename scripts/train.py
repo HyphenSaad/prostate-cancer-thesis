@@ -18,7 +18,7 @@ from constants.encoders import Encoders
 from utils.helper import create_directories
 from utils.data_loader import GenericMILDataset
 from utils.train_engine import TrainEngine
-from utils.file_utils import save_pkl
+from utils.file_utils import save_pkl, load_pkl
 from utils.logger import Logger
 
 logger = Logger()
@@ -225,6 +225,26 @@ def main():
   all_val_recall = []
   all_test_kappa = []
   all_val_kappa = []
+
+  # load performance metrics from previous folds
+  if CONFIG['k_fold_start'] != -1 and CONFIG['k_fold_end'] != -1:
+    for fold in folds:
+      filename = os.path.join(CONFIG['directories']['save_base_directory'], 'split_{}_results.pkl'.format(fold))
+      if os.path.exists(filename):
+        logger.info("Loading results from fold {}...", fold)
+        results = load_pkl(filename)
+        all_test_auc.append(results['test_auc'])
+        all_val_auc.append(results['val_auc'])
+        all_test_acc.append(results['test_acc'])
+        all_val_acc.append(results['val_acc'])
+        all_test_f1.append(results['test_f1'])
+        all_val_f1.append(results['val_f1'])
+        all_test_precision.append(results['test_precision'])
+        all_val_precision.append(results['val_precision'])
+        all_test_recall.append(results['test_recall'])
+        all_val_recall.append(results['val_recall'])
+        all_test_kappa.append(results['test_kappa'])
+        all_val_kappa.append(results['val_kappa'])
 
   for fold in folds:
     logger.info("Training fold {}/{}...", fold + 1, CONFIG['k_fold'])
