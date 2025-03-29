@@ -29,7 +29,9 @@ CONFIG = {
   'drop_out': True,
   'n_classes': 6,
   'learning_rate': 1e-4,
-  'k_fold': 1,
+  'k_fold': 4,
+  'k_fold_start': -1,
+  'k_fold_end': -1,
   'patch_size': 512,
   'in_dim': 1024,
   'max_epochs': 10,
@@ -64,6 +66,8 @@ def show_configs():
   logger.text(f"> Number of Classes: {CONFIG['n_classes']}")
   logger.text(f"> Learning Rate: {CONFIG['learning_rate']}")
   logger.text(f"> K-Fold: {CONFIG['k_fold']}")
+  logger.text(f"> K-Fold Start: {CONFIG['k_fold_start']}")
+  logger.text(f"> K-Fold End: {CONFIG['k_fold_end']}")
   logger.text(f"> Patch Size: {CONFIG['patch_size']}")
   logger.text(f"> Input Dimension: {CONFIG['in_dim']}")
   logger.text(f"> Max Epochs: {CONFIG['max_epochs']}")
@@ -110,6 +114,18 @@ def load_arguments():
     help=f"Number of folds (default: {CONFIG['k_fold']})"
   )
   parser.add_argument(
+    "--k-fold-start",
+    type=int,
+    default=CONFIG['k_fold_start'],
+    help=f"Start fold (default: {CONFIG['k_fold_start']})"
+  )
+  parser.add_argument(
+    "--k-fold-end",
+    type=int,
+    default=CONFIG['k_fold_end'],
+    help=f"End fold (default: {CONFIG['k_fold_end']})"
+  )
+  parser.add_argument(
     "--patch-size",
     type=int,
     default=CONFIG['patch_size'],
@@ -154,6 +170,8 @@ def load_arguments():
   CONFIG['n_classes'] = args.n_classes
   CONFIG['learning_rate'] = args.learning_rate
   CONFIG['k_fold'] = args.k_fold
+  CONFIG['k_fold_start'] = args.k_fold_start
+  CONFIG['k_fold_end'] = args.k_fold_end
   CONFIG['patch_size'] = args.patch_size
   CONFIG['in_dim'] = args.in_dim
   CONFIG['max_epochs'] = args.max_epochs
@@ -180,7 +198,9 @@ def main():
 
   show_configs()
 
-  folds = np.arange(0, CONFIG['k_fold'])
+  start_k_fold = CONFIG['k_fold_start'] if CONFIG['k_fold_start'] != -1 else 0
+  end_k_fold = CONFIG['k_fold_end'] if CONFIG['k_fold_end'] != -1 else CONFIG['k_fold']
+  folds = np.arange(start_k_fold, end_k_fold, 1)
   
   logger.info("Loading dataset...")
   dataset = GenericMILDataset(
@@ -207,7 +227,7 @@ def main():
   all_val_kappa = []
 
   for fold in folds:
-    logger.info("Training fold {}/{}...", fold+1, CONFIG['k_fold'])
+    logger.info("Training fold {}/{}...", fold + 1, CONFIG['k_fold'])
     fold_start_time = time.time()
     
     seed_torch()
@@ -260,10 +280,8 @@ def main():
     save_pkl(filename, results)
     
     fold_time = time.time() - fold_start_time
-    logger.info("Fold {}/{} completed in {:.2f} seconds ({:.2f} minutes)", 
-                fold+1, CONFIG['k_fold'], fold_time, fold_time/60)
-    logger.info("Fold {} results - Test AUC: {:.4f}, Val AUC: {:.4f}", 
-                fold, test_auc, val_auc)
+    logger.info("Fold {}/{} completed in {:.2f} seconds ({:.2f} minutes)", fold + 1, CONFIG['k_fold'], fold_time, fold_time/60)
+    logger.info("Fold {} results - Test AUC: {:.4f}, Val AUC: {:.4f}", fold, test_auc, val_auc)
     logger.empty_line()
 
   logger.info("Saving summary results...")
