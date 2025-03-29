@@ -319,8 +319,7 @@ class GenericMILDataset(GenericWSIClassificationDataset):
     self.patch_size = size
 
 class GenericSplit(GenericMILDataset):
-    def __init__(self, slide_data, num_classes = 2, **kwargs):
-      super(GenericSplit, self).__init__(**kwargs)      
+    def __init__(self, slide_data, num_classes = 2, kaggle_feature_path = None):     
       self.use_h5 = False
       self.slide_data = slide_data
       self.num_classes = num_classes
