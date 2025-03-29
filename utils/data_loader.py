@@ -269,7 +269,8 @@ class GenericMILDataset(GenericWSIClassificationDataset):
     if not hasattr(self, 'features_pt_directory'):
       if is_google_colab: self.features_pt_directory = "/content/output/extract_features/pt_files"
       else: self.features_pt_directory = "/kaggle/working/output/extract_features/pt_files"
-      
+
+    self.features_pt_directory = '/kaggle/input/resnet50-features-512x512-no-overlap-panda'
     img_root = os.path.join(self.extract_patches_dir, slide_id)
     coords_path = os.path.join(self.patches_dir, '{}.h5'.format(slide_id))
 
@@ -288,7 +289,8 @@ class GenericMILDataset(GenericWSIClassificationDataset):
         img_list.append(img)
       return img_list
     
-    full_path = os.path.join(self.features_pt_directory, self.backbone, '{}.pt'.format(slide_id))
+    # full_path = os.path.join(self.features_pt_directory, self.backbone, '{}.pt'.format(slide_id))
+    full_path = os.path.join(self.features_pt_directory, '{}.pt'.format(slide_id))
     try:
       features = torch.load(full_path)
     except:
